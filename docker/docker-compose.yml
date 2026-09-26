@@ -1,0 +1,80 @@
+# Voice Studio — локальний стек.
+#
+# Профілі:
+#   docker compose up -d                    → CPU (ця машина)
+#   docker compose --profile gpu up -d      → GPU (коли буде відповідне залізо)
+#
+# TTS-шлюз: Speaches (OpenAI-сумісний, Piper + Kokoro, динамічне
+# завантаження моделей). Замінює застарілий openedai-speech — див. ADR-005.
+
+name: voice-studio
+
+services:
+  tts:
+    # CPU-образ за замовчуванням. Для GPU — latest-cuda + профіль gpu.
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    container_name: voice-studio-tts
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8000" # слухаємо лише локально
+    volumes:
+      # Кеш моделей HuggingFace поза контейнером — щоб не качати заново
+      - ../data/models/hf:/home/ubuntu/.cache/huggingface/hub
+    environment:
+      - ENABLE_UI=false
+      # Завантажувати модель на вимогу й вивантажувати після простою —
+      # критично для 19 GB RAM і 2 GB VRAM.
+      - MODEL_TTL_SECONDS=900
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    container_name: voice-studio-app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ../data:/app/data
+      - ../app:/app/app # dev: гаряче перезавантаження
+    environment:
+      - VOICE_STUDIO_DATA_DIR=/app/data
+      - VOICE_STUDIO_MODEL_DIR=/app/data/models
+      - TTS_BASE_URL=http://tts:8000/v1
+      - TTS_API_KEY=not-needed
+      - DEFAULT_ENGINE=openai_compat
+      - SYNTH_CONCURRENCY=2
+      - TARGET_LUFS=-18.0
+    depends_on:
+      tts:
+        condition: service_healthy
+
+  # ── GPU-варіант ────────────────────────────────────────────────────────
+  # Свідомо окремий сервіс, а не композиція з tts: 2 GB VRAM на MX330
+  # може не вистачити навіть на завантаження моделі, і тоді краще мати
+  # явний, окремо вмиканий шлях. Перевірити `nvidia-smi` перед стартом.
+  tts-gpu:
+    profiles: ["gpu"]
+    image: ghcr.io/speaches-ai/speaches:latest-cuda
+    container_name: voice-studio-tts-gpu
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ../data/models/hf:/home/ubuntu/.cache/huggingface/hub
+    environment:
+      - ENABLE_UI=false
+      - MODEL_TTL_SECONDS=900
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,98 @@
+[project]
+name = "voice-studio"
+version = "0.1.0"
+description = "Локальне озвучення текстів (.md/.pdf/.txt) з виразом на відкритих TTS-моделях"
+readme = "README.md"
+# ADR-002: 3.11 закріплено, бо частина TTS-рушіїв не має коліс для 3.12+
+requires-python = "==3.11.*"
+dependencies = [
+    # --- веб ---
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.12",
+    "pydantic-settings>=2.6",
+    "sse-starlette>=2.1",
+    "httpx>=0.27",
+    # --- стан ---
+    "sqlmodel>=0.0.22",
+    # --- витяг тексту (ADR-009) ---
+    "pymupdf>=1.24",
+    "markdown-it-py>=3.0",
+    "markitdown[pdf,docx,pptx,xlsx]>=0.1",
+    # --- нормалізація ---
+    "num2words>=0.5.13",
+    # --- аудіо (ADR-006: без ffmpeg у базовому циклі) ---
+    "soundfile>=0.12",
+    "lameenc>=1.7",
+    "pyloudnorm>=0.1.1",
+    "mutagen>=1.47",
+    "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+# Українські рушії — прямий in-process інференс.
+# УВАГА: несумісний з `expressive` — див. ADR-012 і [tool.uv].conflicts нижче.
+uk = [
+    "ukrainian-tts>=6.0",
+]
+piper = [
+    "piper-tts>=1.2",
+]
+# Виразні рушії: української в Chatterbox немає, це для англійських текстів
+# УВАГА: несумісний з `uk` — див. ADR-012 і [tool.uv].conflicts нижче.
+expressive = [
+    "chatterbox-tts>=0.1.7",
+]
+# M4B/AAC та просунутий DSP — потребує нативного ffmpeg (не snap)
+m4b = [
+    "pydub>=0.25",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "ipython>=8.29",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+# ADR-012: `uk` і `expressive` — взаємно несумісні набори, і це не примха
+# резолвера: конфліктів ДВА, незалежних.
+#   1) numpy: chatterbox-tts на Python < 3.13 вимагає numpy<2.0.0,
+#      ukrainian-tts — numpy>=2.3.0;
+#   2) torch/torchaudio: chatterbox тримає рівно 2.6.0, ukrainian-tts (espnet
+#      202509) — >=2.8.0.
+# Другого конфлікту досить самого по собі, тому «послабити numpy» проблему не
+# вирішує.
+#
+# Оголошений конфлікт дає дві речі: `uv lock` резолвить обидва набори в
+# ОКРЕМИХ гілках (тож лок-файл існує і CI не падає), а спроба поставити їх в
+# одне середовище дає явну помилку з назвою конфлікту замість ребуса про
+# numpy. Одне середовище фізично не може містити обидва рушії — рушій, що
+# конфліктує, підключається через межу процесу (`openai_compat`).
+conflicts = [
+    [{ extra = "uk" }, { extra = "expressive" }],
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
