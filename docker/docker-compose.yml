@@ -20,6 +20,9 @@ services:
     volumes:
       # Кеш моделей HuggingFace поза контейнером — щоб не качати заново
       - ../data/models/hf:/home/ubuntu/.cache/huggingface/hub
+      # Мапи голосів і нормалізації для Speaches
+      - ../tts-stack/voice_map.yaml:/app/voice_map.yaml:ro
+      - ../tts-stack/pre_process_map.yaml:/app/pre_process_map.yaml:ro
     environment:
       - ENABLE_UI=false
       # Завантажувати модель на вимогу й вивантажувати після простою —
@@ -65,9 +68,13 @@ services:
     container_name: voice-studio-tts-gpu
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8001:8000"
+      # Виправлено: GPU-профіль використовує порт 8002, щоб не конфліктувати
+      # з CPU-варіантом (якщо обидва запущені одночасно для порівняння).
+      - "127.0.0.1:8002:8000"
     volumes:
       - ../data/models/hf:/home/ubuntu/.cache/huggingface/hub
+      - ../tts-stack/voice_map.yaml:/app/voice_map.yaml:ro
+      - ../tts-stack/pre_process_map.yaml:/app/pre_process_map.yaml:ro
     environment:
       - ENABLE_UI=false
       - MODEL_TTL_SECONDS=900
@@ -78,3 +85,9 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s

@@ -60,7 +60,7 @@
 uv sync --extra dev            # база + pytest/ruff/mypy у .venv (Python 3.11)
 cp .env.example .env
 .venv/bin/python -m pytest tests/ -q                 # → 4 passed
-.venv/bin/python -m uvicorn app.main:app --reload    # → http://127.0.0.1:8000/docs
+.venv/bin/python -m uvicorn app.main:app --reload --port 8000    # → http://127.0.0.1:8000/docs
 ```
 
 Окремо — один рушій на середовище:

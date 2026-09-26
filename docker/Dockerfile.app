@@ -14,14 +14,15 @@ RUN apt-get update \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Закріплена версія uv для відтворюваних збірок
+COPY --from=ghcr.io/astral-sh/uv:0.5.21 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
-# Ставимо лише базові залежності: важкі рушії (ukrainian-tts, chatterbox)
+COPY pyproject.toml README.md uv.lock ./
+# Ставимо лише базові залежності (без -e): важкі рушії (ukrainian-tts, chatterbox)
 # підключаються на хості, де є потрібне залізо.
-RUN uv pip install --system --no-cache . || uv pip install --system --no-cache -e .
+RUN uv pip install --system --no-cache .
 
 COPY app ./app
 
