@@ -98,6 +98,12 @@ error: Extras `expressive` and `uk` are incompatible with the declared conflicts
 підключається через межу процесу (`openai_compat`, ADR-001). Деталі й
 обґрунтування — ADR-012.
 
+> **Пастка.** Оголошений конфлікт читає лише `uv lock` / `uv sync`. Інтерфейс
+> `uv pip install -e ".[uk,expressive]"` у `pyproject.toml` дивиться тільки на
+> залежності й тому видає **той самий ребус про numpy**, ігноруючи
+> `[tool.uv].conflicts`. Тому для встановлення рушіїв використовуйте `uv sync`,
+> а не `uv pip install`.
+
 ## Диск: план витрат
 
 Вільно ~11 GB — цього **не вистачить** на «спробувати все». Орієнтовні розміри:

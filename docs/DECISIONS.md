@@ -393,8 +393,8 @@ ukrainian-tts are incompatible.
 1. **numpy.** `chatterbox-tts` на Python < 3.13 вимагає `numpy>=1.24,<2.0.0`;
    `ukrainian-tts` — `numpy>=2.3.0`.
 2. **torch / torchaudio.** `chatterbox-tts` тримає рівно `torch==2.6.0` і
-   `torchaudio==2.6.0` (для Python < 3.14); `ukrainian-tts` (через
-   `espnet==202509`) — `torch>=2.8.0` і `torchaudio>=2.8.0`.
+   `torchaudio==2.6.0` (для Python < 3.14); `ukrainian-tts` напряму вимагає
+   `torch>=2.8.0` і `torchaudio>=2.8.0` (і додатково тримає `espnet==202509`).
 
 Другий конфлікт видно, лише якщо **примусово** зняти перший: з
 `--override numpy>=2.3.0` резолвер одразу впирається в

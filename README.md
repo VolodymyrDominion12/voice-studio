@@ -57,13 +57,23 @@
 ## Швидкий старт (каркас працює вже зараз)
 
 ```bash
-cd voice-studio
-uv venv --python 3.11          # CPython 3.11.16 уже є в системі
-uv pip install fastapi "uvicorn[standard]" pydantic-settings httpx pytest
+uv sync --extra dev            # база + pytest/ruff/mypy у .venv (Python 3.11)
 cp .env.example .env
 .venv/bin/python -m pytest tests/ -q                 # → 4 passed
 .venv/bin/python -m uvicorn app.main:app --reload    # → http://127.0.0.1:8000/docs
 ```
+
+Окремо — один рушій на середовище:
+
+```bash
+uv sync --extra piper        # MVP: Piper через OpenAI-сумісний шлюз (ADR-005)
+uv sync --extra uk           # українська, in-process (ukrainian-tts)
+uv sync --extra expressive   # англійська, in-process (chatterbox-tts)
+```
+
+`uk` і `expressive` **не сумісні** — це різні покоління `torch`/`numpy`, і
+`uv` зупинить спробу поставити їх разом (ADR-012). Рушій, чий стек конфліктує з
+поточним середовищем, підключається через `openai_compat`, а не імпортом.
 
 Повний стек із TTS-сервером (після етапу 1):
 
