@@ -73,7 +73,7 @@
 - [x] Панель черги з прогресом через SSE.
 
 **Вимірювання**
-- [ ] `scripts/benchmark.py` — реальний real-time factor для Piper і
+- [x] `scripts/benchmark.py` — реальний real-time factor для Piper і
       `ukrainian-tts` на цій машині. **Результат записати в `RESEARCH.md`**,
       замінивши оцінки на числа.
 

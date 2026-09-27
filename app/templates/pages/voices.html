@@ -36,6 +36,27 @@
         <span class="chip line tiny">{{ engine.capabilities.sample_rate }} Гц</span>
       </div>
 
+      {# Головна чесність цієї сторінки: каталог обіцяє голоси, яких у шлюзі
+         може не бути, а шлюз приймає будь-яке імʼя й озвучує своїм. #}
+      {% if installed_label %}
+        <div class="alert ok" style="margin-top: 12px">
+          <b>Шлюз справді має голос(и):</b> <span class="mono">{{ installed_label }}</span>.
+          {% set missing = engine.voice_status.values() | select('sameas', false) | list | length %}
+          {% if missing %}
+            <div class="tiny">
+              Ще {{ missing }} голос(ів) із каталогу у шлюзі немає. Вони приймаються
+              без помилки, але звучатимуть голосом <span class="mono">{{ installed_label }}</span> —
+              поки відповідні моделі не встановлено в Speaches.
+            </div>
+          {% endif %}
+        </div>
+      {% elif probe and not probe.reachable %}
+        <div class="alert warn" style="margin-top: 12px">
+          Не вдалося перевірити шлюз ({{ probe.hint }}), тому невідомо, які голоси
+          справді встановлено.
+        </div>
+      {% endif %}
+
       {% if not engine.capabilities.emotions %}
         <p class="tiny muted" style="margin: 10px 0 0">
           Рушій не вміє емоцій — вираз бере на себе шар просодії: темп, паузи
@@ -51,10 +72,23 @@
           </thead>
           <tbody>
             {% for voice in engine.voices %}
+              {% set status = engine.voice_status.get(voice.id) %}
               <tr>
                 <td class="mono">{{ voice.id }}</td>
                 <td>{{ voice.lang or '—' }}</td>
                 <td>{{ {'f': 'жіночий', 'm': 'чоловічий', 'multi': 'багатоголосий'}.get(voice.gender, voice.gender or '—') }}</td>
+                <td>
+                  {% if status is sameas true %}
+                    <span class="chip ok tiny">встановлено</span>
+                  {% elif status is sameas false %}
+                    <span class="chip warn tiny"
+                          title="Шлюз прийме це імʼя, але озвучить тим голосом, який має встановлений">
+                      немає в шлюзі
+                    </span>
+                  {% else %}
+                    <span class="chip line tiny">не перевірено</span>
+                  {% endif %}
+                </td>
                 <td class="right">
                   <button class="btn sm" type="button"
                           data-voice-audition="{{ voice.id }}" data-engine="{{ engine.id }}">

@@ -6,10 +6,16 @@
 
 Запуск:
     uv run python scripts/benchmark.py                 # усі доступні рушії
-    uv run python scripts/benchmark.py --engine piper
+    uv run python scripts/benchmark.py --engine openai-compat --voice uk_UA-lada-x_low
+    uv run python scripts/benchmark.py --pipeline      # весь конвеєр, а не лише синтез
     uv run python scripts/benchmark.py --repeat 3
 
 Скрипт нічого не встановлює. Якщо рушій недоступний — пише про це й іде далі.
+
+ВАЖЛИВО: налаштування беруться з `app.config.get_settings()`, тобто з `.env`,
+а не з оточення процесу. Раніше тут читався `os.environ`, і `.env` із
+`TTS_MODEL=…` не діяв — скрипт ішов у шлюз із `tts-1` і діставав 404 від
+Speaches (той самий випадок, що описаний у README §12).
 """
 
 from __future__ import annotations
@@ -26,6 +32,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "data" / "benchmark"
+
+# Щоб `import app…` працював при запуску скриптом із будь-якого каталогу
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # Тестовий текст: навмисно містить те, на чому TTS зазвичай спотикається —
 # числа, скорочення, латиницю, довге речення, питальну інтонацію,
@@ -51,6 +61,11 @@ class Result:
     bytes_out: int = 0
     error: str = ""
     notes: list[str] = field(default_factory=list)
+    # Додано для виміру всього конвеєра (--pipeline)
+    stage: str = "synthesis"
+    segments: int = 0
+    synth_seconds: float = 0.0
+    assemble_seconds: float = 0.0
 
 
 def peak_rss_mb() -> float:
@@ -101,7 +116,7 @@ def bench_piper(voice: str, out: Path) -> tuple[Path, list[str]]:
 def bench_ukrainian_tts(voice: str, out: Path) -> tuple[Path, list[str]]:
     """robinhad/ukrainian-tts — MIT, з автоматичним наголосом."""
     try:
-        from ukrainian_tts.tts import Stress, TTS, Voices
+        from ukrainian_tts.tts import TTS, Stress, Voices
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("ukrainian-tts не встановлено (uv sync --extra uk)") from exc
 
@@ -131,15 +146,21 @@ def bench_ukrainian_tts(voice: str, out: Path) -> tuple[Path, list[str]]:
 
 
 def bench_openai_compat(voice: str, out: Path) -> tuple[Path, list[str]]:
-    """Будь-який OpenAI-сумісний /v1/audio/speech — Speaches, Kokoro-FastAPI."""
-    import os
+    """Будь-який OpenAI-сумісний /v1/audio/speech — Speaches, Kokoro-FastAPI.
+
+    Налаштування — з `.env` через `get_settings()`, а не з оточення: інакше
+    `TTS_MODEL` з `.env` не діяв і шлюз отримував `tts-1` (див. README §12).
+    """
     import urllib.error
     import urllib.request
 
-    base = os.environ.get("TTS_BASE_URL", "http://127.0.0.1:8001/v1").rstrip("/")
+    from app.config import get_settings
+
+    settings = get_settings()
+    base = settings.tts_base_url.rstrip("/")
     payload = json.dumps(
         {
-            "model": os.environ.get("TTS_MODEL", "tts-1"),
+            "model": settings.tts_model,
             "input": SAMPLE_TEXT,
             "voice": voice,
             "response_format": "wav",
@@ -151,16 +172,22 @@ def bench_openai_compat(voice: str, out: Path) -> tuple[Path, list[str]]:
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {os.environ.get('TTS_API_KEY', 'not-needed')}",
+            "Authorization": f"Bearer {settings.tts_api_key}",
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
             out.write_bytes(resp.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:200]
+        raise RuntimeError(
+            f"{base} повернув {exc.code}: {detail}. "
+            f"Модель у запиті: {settings.tts_model!r} — перевірте TTS_MODEL у .env"
+        ) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"сервер недоступний за {base}: {exc}") from exc
 
-    return out, [f"сервер: {base}"]
+    return out, [f"сервер: {base}", f"модель: {settings.tts_model}", f"голос: {voice}"]
 
 
 def bench_zonos2(voice: str, out: Path) -> tuple[Path, list[str]]:
@@ -204,20 +231,120 @@ def bench_zonos2(voice: str, out: Path) -> tuple[Path, list[str]]:
 
 
 ENGINES = {
-    "piper": (bench_piper, ["uk_UA-tetiana-high", "uk_UA-mykyta-high", "uk_UA-ukrainian_tts-medium"]),
+    "piper": (bench_piper, ["uk_UA-tetiana-high", "uk_UA-mykyta-high"]),
     "ukrainian-tts": (bench_ukrainian_tts, ["tetiana", "mykyta", "lada"]),
-    "openai-compat": (bench_openai_compat, ["uk_UA-tetiana-high", "alloy"]),
+    "openai-compat": (bench_openai_compat, ["uk_UA-lada-x_low", "uk_UA-tetiana-high"]),
     # Критичне вимірювання: ризик R2 плану (швидкість ZONOS2 на CPU).
     "zonos2": (bench_zonos2, ["default"]),
 }
 
 
+# ── Вимір усього конвеєра ────────────────────────────────────────────────
+# Синтез — це лише частина роботи: далі сегменти склеюються, нормалізуються
+# за EBU R128 і кодуються в MP3. Саме цей шлях проходить користувач, тож
+# важливо знати не лише RTF моделі, а й ціну постобробки.
+
+def bench_pipeline(voice: str, out_dir: Path) -> tuple[Path, list[str], dict]:
+    """Повний конвеєр: нормалізація → сегментація → синтез → склейка → MP3.
+
+    Використовує ТІ САМІ сервіси застосунку, що й воркер, тому числа
+    стосуються реального шляху, а не окремого виклику моделі.
+    """
+    from app.models import Block, BlockKind
+    from app.services.audio.assemble import build_audio
+    from app.services.expression.profiles import get_prosody
+    from app.services.library.blocks import block_effective_text
+    from app.services.normalize.uk import normalize
+    from app.services.segment.splitter import split_sentences
+    from app.services.tts.base import SynthRequest
+    from app.services.tts.openai_compat import get_openai_compat_engine
+
+    engine = get_openai_compat_engine()
+    max_chars = engine.capabilities().max_chars
+
+    # 1. Нормалізація й сегментація — так, як це робить завантаження документа
+    block = Block(
+        ordinal=0, kind=BlockKind.PARAGRAPH, text_raw=SAMPLE_TEXT,
+        text_normalized=normalize(SAMPLE_TEXT), speak=True,
+    )
+    normalized_seconds = 0.0
+    sentences = split_sentences(block_effective_text(block), max_chars=max_chars)
+
+    segment_dir = out_dir / "pipeline_segments"
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    for stale in segment_dir.glob("*.wav"):
+        stale.unlink()
+
+    # 2. Синтез кожного сегмента — з просодією, як у воркері
+    prosody = get_prosody("neutral", 1.0)
+    paths: list[Path] = []
+    pauses: list[int] = []
+    energies: list[float] = []
+
+    started = time.perf_counter()
+    for index, sentence in enumerate(sentences):
+        target = segment_dir / f"seg{index}.wav"
+        engine.synthesize(
+            SynthRequest(
+                text=sentence, voice_id=voice, speed=prosody.speed, output_path=target
+            )
+        )
+        paths.append(target)
+        pauses.append(prosody.pause_after_ms)
+        energies.append(prosody.energy_db)
+    synth_seconds = time.perf_counter() - started
+
+    # 3. Склейка + LUFS + MP3
+    started = time.perf_counter()
+    results = build_audio(
+        paths, out_dir, "pipeline",
+        pause_ms=400,
+        target_sample_rate=24000,
+        target_lufs=-18.0,
+        formats=("wav", "mp3"),
+        pauses_ms=pauses,
+        energies_db=energies,
+    )
+    assemble_seconds = time.perf_counter() - started
+
+    mp3 = results["mp3"]
+    notes = [
+        f"сегментів: {len(sentences)} (ліміт рушія {max_chars} симв.)",
+        f"нормалізований текст: {len(block_effective_text(block))} символів",
+        f"синтез: {synth_seconds:.2f} с · склейка+LUFS+MP3: {assemble_seconds:.2f} с",
+        f"WAV для перевірки: {results['wav'].name}",
+    ]
+    extra = {
+        "segments": len(sentences),
+        "synth_seconds": synth_seconds,
+        "assemble_seconds": assemble_seconds,
+        "normalized_seconds": normalized_seconds,
+    }
+    return mp3, notes, extra
+
+
+def duration_of(path: Path) -> float:
+    """Тривалість аудіо: WAV читаємо напряму, MP3 — через soundfile."""
+    if path.suffix.lower() == ".wav":
+        return wav_duration(path)
+    import soundfile as sf
+
+    info = sf.info(str(path))
+    return info.frames / float(info.samplerate)
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--engine", choices=[*ENGINES, "all"], default="all")
     ap.add_argument("--voice", help="один конкретний голос замість типового набору")
     ap.add_argument("--repeat", type=int, default=1, help="повторів на голос (для медіани)")
     ap.add_argument("--text-file", type=Path, help="власний текст замість вбудованого")
+    ap.add_argument(
+        "--pipeline", action="store_true",
+        help="міряти весь конвеєр (сегментація → синтез → склейка → LUFS → MP3)",
+    )
     args = ap.parse_args()
 
     global SAMPLE_TEXT
@@ -227,6 +354,9 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Текст: {len(SAMPLE_TEXT)} символів")
     print(f"Пікова RAM до старту: {peak_rss_mb():.0f} MB\n")
+
+    if args.pipeline:
+        return run_pipeline(args)
 
     selected = list(ENGINES) if args.engine == "all" else [args.engine]
     results: list[Result] = []
@@ -277,9 +407,66 @@ def main() -> int:
             else:
                 print(f"[SKIP] {name:15s} {voice:26s} {last.error}")
 
+    return finish(results)
+
+
+def run_pipeline(args) -> int:
+    """Виміряти весь конвеєр для наявних голосів."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    voices = [args.voice] if args.voice else ENGINES["openai-compat"][1]
+    results: list[Result] = []
+
+    print(f"Рушій: openai_compat · модель {settings.tts_model}")
+    print(f"Постобробка: склейка + EBU R128 ({settings.target_lufs} LUFS) + MP3\n")
+
+    for voice in voices:
+        res = Result(engine="pipeline", voice=voice, ok=False, stage="pipeline")
+        try:
+            path, notes, extra = bench_pipeline(voice, OUT_DIR)
+            res.audio_seconds = duration_of(path)
+            res.wall_seconds = extra["synth_seconds"] + extra["assemble_seconds"]
+            res.rtf = res.wall_seconds / res.audio_seconds if res.audio_seconds else 0.0
+            res.bytes_out = path.stat().st_size
+            res.segments = extra["segments"]
+            res.synth_seconds = extra["synth_seconds"]
+            res.assemble_seconds = extra["assemble_seconds"]
+            res.notes = notes
+            res.ok = True
+        except Exception as exc:
+            res.error = f"{type(exc).__name__}: {exc}"
+
+        res.peak_rss_mb = peak_rss_mb()
+        results.append(res)
+
+        if res.ok:
+            share = res.assemble_seconds / res.wall_seconds * 100 if res.wall_seconds else 0
+            print(
+                f"[OK]   {voice:26s} аудіо {res.audio_seconds:6.1f} с | "
+                f"усього {res.wall_seconds:6.2f} с | RTF {res.rtf:5.2f} | "
+                f"постобробка {share:4.1f} % часу"
+            )
+            for note in res.notes:
+                print(f"         · {note}")
+        else:
+            print(f"[SKIP] {voice:26s} {res.error}")
+
+    return finish(results)
+
+
+def finish(results: list[Result]) -> int:
+    """Записати звіт і підсумувати."""
     report = OUT_DIR / "benchmark.json"
+    existing: list[dict] = []
+    if report.exists():
+        try:
+            existing = json.loads(report.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = []
+
     report.write_text(
-        json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2),
+        json.dumps(existing + [asdict(r) for r in results], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     print(f"\nЗвіт: {report}")
@@ -291,7 +478,7 @@ def main() -> int:
             f"Найшвидший: {best.engine} / {best.voice} — RTF {best.rtf:.2f} "
             f"({best.audio_seconds:.1f} с аудіо за {best.wall_seconds:.1f} с)"
         )
-        print("\nВнеси ці числа в docs/RESEARCH.md, розділ «Не перевірено».")
+        print("\nВнеси ці числа в docs/RESEARCH.md і ARCHITECTURE.md, розділ 8.")
     else:
         print("\nЖоден рушій не відпрацював. Почни з: uv sync --extra piper")
     return 0

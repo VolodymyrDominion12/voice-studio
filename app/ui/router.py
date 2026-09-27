@@ -39,7 +39,14 @@ from app.services.library.errors import (
     UnsupportedFormatError,
     UploadTooLargeError,
 )
-from app.services.system import health_snapshot, probe_tts_gateway, tts_ready_for_synthesis
+from app.services.system import (
+    health_snapshot,
+    installed_voices_label,
+    probe_tts_gateway,
+    probe_tts_gateway_cached,
+    tts_ready_for_synthesis,
+    voice_is_installed,
+)
 from app.ui import presentation
 from app.ui.templating import templates
 
@@ -265,6 +272,11 @@ def _editor_context(
         "engine_caps": engine_caps,
         "voices": voices,
         "selected_voice": selected_voice,
+        "voice_status": {
+            voice["id"]: voice_is_installed(probe_tts_gateway_cached(), voice["id"])
+            for voice in voices
+        },
+        "installed_label": installed_voices_label(probe_tts_gateway_cached()),
         "profiles": all_profiles_dict(),
         "emotion_order": EMOTION_ORDER,
         "emotion_labels": presentation.EMOTION_LABELS,
@@ -416,6 +428,7 @@ async def preview_block(
             },
         )
 
+    probe = probe_tts_gateway_cached()
     return templates.TemplateResponse(
         request,
         "partials/preview_player.html",
@@ -424,6 +437,8 @@ async def preview_block(
             "block_id": block_id,
             "voice_id": voice,
             "max_chars": caps["max_chars"],
+            "voice_installed": voice_is_installed(probe, voice),
+            "installed_label": installed_voices_label(probe),
         },
     )
 
@@ -501,16 +516,35 @@ REFERENCE_PHRASE = (
 
 @router.get("/voices", response_class=HTMLResponse)
 def voices_page(request: Request, session: Session = Depends(get_session)):
-    """Рушії з capabilities, голоси з прослуховуванням і пресети."""
+    """Рушії з capabilities, голоси з прослуховуванням і пресети.
+
+    Сторінка перевіряє шлюз (з коротким кешем), бо каталог застосунку
+    обіцяє пʼять українських голосів, а шлюз може мати один: запит із чужим
+    імʼям голосу він приймає й озвучує тим, що встановлений. Без цієї
+    перевірки сторінка показувала б пʼять однакових голосів і вводила б
+    користувача в оману.
+    """
+    probe = probe_tts_gateway_cached()
+
+    available = []
+    for engine in engines_service.available_engines():
+        enriched = dict(engine)
+        enriched["voice_status"] = {
+            voice["id"]: voice_is_installed(probe, voice["id"]) for voice in engine["voices"]
+        }
+        available.append(enriched)
+
     return templates.TemplateResponse(
         request,
         "pages/voices.html",
         {
             "active_nav": "voices",
             "health": health_snapshot(),
-            "available": engines_service.available_engines(),
+            "available": available,
             "unavailable": engines_service.unavailable_engines(),
             "presets": presets_service.list_presets(session),
+            "probe": probe,
+            "installed_label": installed_voices_label(probe),
         },
     )
 
@@ -549,8 +583,17 @@ async def audition_voice(
             },
         )
 
+    probe = probe_tts_gateway_cached()
     return templates.TemplateResponse(
-        request, "partials/voice_preview.html", {"result": result}
+        request,
+        "partials/voice_preview.html",
+        {
+            "result": result,
+            # Шлюз озвучить тим голосом, який має, навіть якщо попросили інший —
+            # тому чесно кажемо, що саме почує користувач.
+            "voice_installed": voice_is_installed(probe, voice_id),
+            "installed_label": installed_voices_label(probe),
+        },
     )
 
 

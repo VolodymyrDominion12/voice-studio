@@ -15,7 +15,11 @@ from sqlmodel import Session, delete, select
 
 from app.config import get_settings
 from app.models import Block, Document, Job, JobStatus, Segment
-from app.services.system import probe_tts_gateway, tts_ready_for_synthesis
+
+# Оригінал пробника, знятий ДО підміни в conftest: потрібен тестам, які
+# навмисно перевіряють реальний похід у мережу.
+from app.services.system import probe_tts_gateway as _real_probe
+from app.services.system import tts_ready_for_synthesis
 
 # Текст навмисно такий, що нормалізатор його змінює (тире й числа) —
 # інакше панель «Різниця» не рендериться взагалі й тест нічого не перевіряє.
@@ -48,7 +52,7 @@ def test_probe_reports_unreachable_gateway(monkeypatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "tts_base_url", "http://127.0.0.1:9/v1")
 
-    probe = probe_tts_gateway(timeout=1.0)
+    probe = _real_probe(timeout=1.0)
 
     assert probe["reachable"] is False
     assert "недоступний" in probe["hint"]
@@ -60,7 +64,7 @@ def test_probe_detects_missing_model(monkeypatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "tts_model", "ось-такої-моделі-немає")
 
-    probe = probe_tts_gateway()
+    probe = _real_probe()
 
     if not probe["reachable"]:
         pytest.skip("TTS-шлюз не піднятий у цьому середовищі")
@@ -71,13 +75,25 @@ def test_probe_detects_missing_model(monkeypatch) -> None:
 
 
 def test_ready_for_synthesis_blocks_missing_model(monkeypatch) -> None:
+    """Справжній пробник (не підміна з conftest) має заблокувати синтез.
+
+    conftest підміняє `probe_tts_gateway` на «здоровий», щоб тести не ходили
+    в мережу. Тут повертаємо оригінал: перевіряємо саме реальну поведінку
+    проти живого шлюзу, а якщо його немає — тест чесно пропускається.
+    """
+    from app.services import system
+
+    monkeypatch.setattr(system, "probe_tts_gateway", _real_probe)
     settings = get_settings()
     monkeypatch.setattr(settings, "tts_model", "ось-такої-моделі-немає")
 
+    probe = _real_probe()
+    if not probe["reachable"]:
+        pytest.skip("TTS-шлюз не піднятий у цьому середовищі")
+
     ready, reason = tts_ready_for_synthesis()
 
-    if ready:
-        pytest.skip("TTS-шлюз не піднятий у цьому середовищі")
+    assert ready is False
     assert "немає" in reason
 
 

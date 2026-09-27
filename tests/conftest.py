@@ -33,6 +33,38 @@ def isolated_data_dir(tmp_path_factory):
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def stub_gateway_probe(monkeypatch):
+    """Тести не ходять у мережу: пробник TTS-шлюзу підмінений на «здоровий».
+
+    Пробник викликається на сторінці голосів, у редакторі, у прев'ю й перед
+    створенням завдання. Без підміни тести залежали б від того, чи піднято
+    Docker-контейнер, — і результат залежав би від машини, а не від коду.
+
+    Стан за замовчуванням — «шлюз живий, модель на місці», бо саме він
+    потрібен більшості тестів. Тести шляхів збою підміняють його самі.
+    """
+    from app.services.system import reset_probe_cache
+
+    healthy = {
+        "url": "http://test-gateway/v1/models",
+        "configured_model": "test-model",
+        "reachable": True,
+        "latency_ms": 1,
+        "models": ["test-model"],
+        "model_voices": ["lada"],
+        "model_sample_rate": 16000,
+        "model_installed": True,
+        "hint": "",
+    }
+    monkeypatch.setattr(
+        "app.services.system.probe_tts_gateway", lambda *args, **kwargs: dict(healthy)
+    )
+    reset_probe_cache()
+    yield healthy
+    reset_probe_cache()
+
+
 @pytest.fixture(name="db_engine", scope="session")
 def db_engine_fixture():
     """In-memory SQLite для тестів — ізольований від реального data/."""

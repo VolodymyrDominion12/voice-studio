@@ -17,6 +17,12 @@
       {{ result.effective_chars }} символів · голос <span class="mono">{{ result.voice_id }}</span>
       {%- if result.cached %} · з кешу{% endif %}
     </div>
+    {% if voice_installed is sameas false %}
+      <div class="tiny warn-text">
+        ⚠ Голосу <span class="mono">{{ result.voice_id }}</span> немає в шлюзі —
+        звучить <span class="mono">{{ installed_label or 'голос за замовчуванням' }}</span>.
+      </div>
+    {% endif %}
     {% if result.truncated %}
       <div class="tiny warn-text">
         ⚠ Долетіло {{ result.effective_chars }} із {{ result.requested_chars }} символів:

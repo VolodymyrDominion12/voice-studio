@@ -62,8 +62,10 @@
       <label class="tiny">голос
         <select name="voice" data-voice-select>
           {% for voice in voices %}
+            {% set status = voice_status.get(voice.id) %}
             <option value="{{ voice.id }}" {% if voice.id == selected_voice %}selected{% endif %}>
               {{ voice.id }}{% if voice.gender %} · {{ voice.gender }}{% endif %}
+              {%- if status is sameas false %} (немає в шлюзі){% endif %}
             </option>
           {% endfor %}
         </select>
@@ -72,6 +74,12 @@
       <span class="chip line tiny" title="Ліміт символів в одному запиті до рушія">
         макс. {{ engine_caps.max_chars }} симв.
       </span>
+
+      {% if installed_label %}
+        <span class="chip line tiny" title="Голоси, які справді встановлено в TTS-шлюзі">
+          у шлюзі: {{ installed_label }}
+        </span>
+      {% endif %}
 
       {% if not engine_caps.emotions %}
         <span class="chip line tiny"

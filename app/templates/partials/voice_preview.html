@@ -13,6 +13,13 @@
       {{ result.voice_id }} · {{ result.effective_chars }} символів
       {%- if result.cached %} · з кешу{% endif %}
     </div>
+    {% if voice_installed is sameas false %}
+      <div class="tiny warn-text">
+        ⚠ Цього голосу немає в шлюзі — ви чуєте голос
+        <span class="mono">{{ installed_label or 'за замовчуванням' }}</span>.
+        Шлюз приймає будь-яке імʼя голосу, але озвучує тим, що встановлений.
+      </div>
+    {% endif %}
     {% if result.truncated %}
       <div class="tiny warn-text">
         ⚠ Еталонну фразу обрізано до {{ result.max_chars }} символів (ліміт рушія).

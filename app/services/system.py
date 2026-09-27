@@ -48,13 +48,19 @@ def health_snapshot() -> dict[str, Any]:
 
 
 def probe_tts_gateway(timeout: float = 3.0) -> dict[str, Any]:
-    """Перевірити TTS-шлюз: чи живий і чи встановлено потрібну модель.
+    """Перевірити TTS-шлюз: чи живий, чи є модель і **які голоси вона має**.
 
     Навіщо саме так: найдорожча помилка в цьому застосунку — створити завдання
     на 20 хвилин і дізнатися через три сегменти, що шлюз відповідає `404 Model
     ... is not installed`. Тому пробник перевіряє не лише доступність, а й
     наявність **сконфігурованої моделі** серед установлених, і повертає готову
     підказку, що саме виправити.
+
+    Друга, менш очевидна річ: шлюз **приймає будь-яке імʼя голосу** й озвучує
+    тим, що реально встановлений (перевірено: запит із `uk_UA-tetiana-high` до
+    моделі `piper-uk_UA-lada-x_low` повертає 200 і звук голосом `lada`). Тому
+    пробник повертає ще й `model_voices`, щоб UI міг чесно сказати, які голоси
+    справді є, а які лише в каталозі.
 
     Повертає словник, а не кидає винятки: недоступний шлюз — це стан, а не збій.
     """
@@ -68,6 +74,8 @@ def probe_tts_gateway(timeout: float = 3.0) -> dict[str, Any]:
         "reachable": False,
         "latency_ms": None,
         "models": [],
+        "model_voices": [],
+        "model_sample_rate": None,
         "model_installed": None,   # None = невідомо (не змогли перевірити)
         "hint": "",
     }
@@ -97,11 +105,24 @@ def probe_tts_gateway(timeout: float = 3.0) -> dict[str, Any]:
 
     result["reachable"] = True
     models = payload.get("data") if isinstance(payload, dict) else None
-    ids = [item.get("id", "") for item in models or [] if isinstance(item, dict)]
+    entries = [item for item in models or [] if isinstance(item, dict)]
+    ids = [item.get("id", "") for item in entries]
     result["models"] = ids
 
     configured = settings.tts_model
     result["model_installed"] = configured in ids if ids else None
+
+    for entry in entries:
+        if entry.get("id") != configured:
+            continue
+        voices = entry.get("voices") or []
+        result["model_voices"] = [
+            voice.get("id") or voice.get("name", "")
+            for voice in voices
+            if isinstance(voice, dict)
+        ]
+        result["model_sample_rate"] = entry.get("sample_rate")
+        break
 
     if result["model_installed"] is False:
         result["hint"] = (
@@ -115,6 +136,49 @@ def probe_tts_gateway(timeout: float = 3.0) -> dict[str, Any]:
         )
 
     return result
+
+
+def _voice_key(voice_id: str) -> str:
+    """Нормалізувати імʼя голосу для порівняння з тим, що є у шлюзі.
+
+    Каталог застосунку тримає імена на кшталт `uk_UA-lada-x_low`, а шлюз
+    називає той самий голос `lada`. Зводимо обидва до «ядра» імені.
+    """
+    key = voice_id.strip().lower()
+    key = key.split("/")[-1]           # speaches-ai/piper-uk_UA-lada-x_low
+    key = key.removeprefix("piper-")
+    key = key.removeprefix("uk_ua-").removeprefix("uk-")
+    for suffix in ("-x_low", "-medium", "-high", "-low", "-xlow"):
+        key = key.removesuffix(suffix)
+    return key
+
+
+def voice_is_installed(probe: dict[str, Any], voice_id: str) -> bool | None:
+    """Чи справді цей голос є у шлюзі.
+
+    Повертає `None`, якщо перевірити не вдалося (шлюз недоступний або не
+    повідомив голосів) — тоді UI не має нічого стверджувати.
+    """
+    if not probe.get("reachable") or probe.get("model_installed") is False:
+        return None
+
+    model_voices = [voice for voice in probe.get("model_voices") or [] if voice]
+    if not model_voices:
+        return None
+
+    wanted = _voice_key(voice_id)
+    known = {_voice_key(voice) for voice in model_voices}
+
+    if wanted in known:
+        return True
+    # Голос може бути вказаний у самому id моделі: «piper-uk_UA-lada-x_low»
+    return wanted in _voice_key(probe.get("configured_model", ""))
+
+
+def installed_voices_label(probe: dict[str, Any]) -> str:
+    """Людський перелік голосів, які шлюз справді має."""
+    voices = [voice for voice in probe.get("model_voices") or [] if voice]
+    return ", ".join(voices) if voices else ""
 
 
 def tts_ready_for_synthesis() -> tuple[bool, str]:
@@ -131,3 +195,37 @@ def tts_ready_for_synthesis() -> tuple[bool, str]:
         return False, probe["hint"]
     return True, ""
 
+
+
+# ── Кеш пробника ──────────────────────────────────────────────────────────────
+# Пробник ходить у мережу, тож викликати його на кожному рендері сторінки не
+# можна. Короткий кеш (30 с) дає змогу показувати чесний стан голосів у
+# редакторі й на сторінці голосів, не сповільнюючи їх.
+_probe_cache: dict[str, Any] = {"at": 0.0, "value": None}
+_PROBE_CACHE_SECONDS = 30.0
+
+
+def probe_tts_gateway_cached(
+    max_age: float = _PROBE_CACHE_SECONDS, timeout: float = 1.5
+) -> dict[str, Any]:
+    """Той самий пробник, але з коротким кешем.
+
+    `GET /api/v1/health/tts` і кнопка «Перевірити зараз» на сторінці «Система»
+    навмисно викликають НЕкешований `probe_tts_gateway()`: якщо користувач
+    просить перевірити, він має отримати свіжий результат.
+    """
+    now = time.monotonic()
+    cached = _probe_cache["value"]
+    if cached is not None and now - float(_probe_cache["at"]) < max_age:
+        return cached
+
+    value = probe_tts_gateway(timeout=timeout)
+    _probe_cache["at"] = now
+    _probe_cache["value"] = value
+    return value
+
+
+def reset_probe_cache() -> None:
+    """Скинути кеш (потрібно тестам і після зміни конфігурації)."""
+    _probe_cache["at"] = 0.0
+    _probe_cache["value"] = None
