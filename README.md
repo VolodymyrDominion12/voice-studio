@@ -42,7 +42,7 @@
 | Нормалізація української, сплітер речень, профілі емоцій | ✅ код і тести є, викликаються з конвеєра |
 | `pytest tests/ -q` | ✅ 5 passed |
 | Завантаження документів, блоки, завдання синтезу (`/documents`, `/jobs`, SSE) | ❌ HTTP 500 — два блокери, див. [§11](#11-відомі-проблеми-й-обмеження) |
-| Веб-інтерфейс | ❌ ще немає: `app/templates/` і `app/static/` порожні. Сьогодні «UI» — це Swagger `/docs` або `curl` |
+| Веб-інтерфейс | ❌ ще немає: `app/templates/` і `app/static/` порожні. Сьогодні «UI» — це Swagger `/docs` або `curl`. Концепція — [`docs/FRONTEND.md`](docs/FRONTEND.md), клікабельний макет — [`docs/frontend-mockup.html`](docs/frontend-mockup.html) |
 | PDF / DOCX / EPUB / HTML | ❌ витяг не реалізовано (тільки `.txt` / `.md`), див. етап 2 у [`docs/PLAN.md`](docs/PLAN.md) |
 | M4B, клонування голосу, OCR, пресети | ❌ етапи 2–4 |
 
@@ -611,7 +611,8 @@ voice-studio/
 ├── tts-stack/             # voice_map.yaml · pre_process_map.yaml · README про Speaches і ZONOS2
 ├── docker/                # Dockerfile.app · docker-compose.yml
 ├── tests/test_smoke.py    # 5 димових тестів: health, каталог рушіїв, емоції
-└── docs/                  # RESEARCH · PLAN · ARCHITECTURE · ENVIRONMENT · DECISIONS
+└── docs/                  # RESEARCH · PLAN · ARCHITECTURE · ENVIRONMENT · DECISIONS · FRONTEND
+                           #   FRONTEND.md — концепція UI; frontend-mockup.html — статичний макет
 ```
 
 ### Як додати новий рушій
@@ -690,7 +691,10 @@ or annotate the field with NaiveDatetime for naive storage.
 
 * **Веб-інтерфейсу немає.** `app/templates/` і `app/static/` порожні (ADR-008
   планує Jinja2 + htmx + Alpine.js без кроку збірки). Сьогодні користуватись
-  можна через `/docs` або `curl`.
+  можна через `/docs` або `curl`. Концепція інтерфейсу розписана в
+  [`docs/FRONTEND.md`](docs/FRONTEND.md) разом зі статичним макетом
+  [`docs/frontend-mockup.html`](docs/frontend-mockup.html); там же — перелік
+  операцій, для яких в API бракує ендпоінтів.
 * **Витяг тексту тільки `.txt` / `.md`.** `.pdf`, `.docx`, `.epub`, `.html`
   приймаються білим списком, але екстрактор кидає `NotImplementedError`
   (після виправлення блокерів це буде `422`, а не робочий результат).

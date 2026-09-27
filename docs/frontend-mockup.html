@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Studio — макет фронтенду (концепція)</title>
+<!--
+  СТАТИЧНИЙ МАКЕТ КОНЦЕПЦІЇ. Не підключений до API, дані вигадані.
+  Призначення — показати розкладку, стани й контроли, описані в docs/FRONTEND.md.
+  Реалізація буде на Jinja2 + htmx + Alpine.js (ADR-008), тут — простий HTML/CSS/JS,
+  щоб макет відкривався подвійним кліком без збірки й без мережі.
+-->
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --panel2:#fbfbfd; --border:#e3e6eb; --border2:#eef0f4;
+    --text:#1c2024; --muted:#6b7280; --muted2:#98a1ae; --accent:#2f6fed; --accent-soft:#eaf1fe;
+    --ok:#137a4b; --ok-soft:#e6f5ed; --run:#2f6fed; --run-soft:#eaf1fe;
+    --warn:#a25c00; --warn-soft:#fdf1e0; --err:#b3261e; --err-soft:#fdecea;
+    --stall:#6b3fa0; --stall-soft:#f1eafa; --queued:#5b6472; --queued-soft:#eef0f3;
+    --radius:10px; --radius-sm:7px;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
+  html[data-theme="dark"]{
+    --bg:#14171b; --panel:#1a1e24; --panel2:#171b21; --border:#2a3038; --border2:#232830;
+    --text:#e6e9ee; --muted:#9aa4b2; --muted2:#6f7987; --accent:#6b9bff; --accent-soft:#1d2735;
+    --ok:#4ec98a; --ok-soft:#152a20; --run:#6b9bff; --run-soft:#1b2635;
+    --warn:#e0a44a; --warn-soft:#2b2317; --err:#ff7a70; --err-soft:#2e1a19;
+    --stall:#b79bff; --stall-soft:#231d33; --queued:#9aa4b2; --queued-soft:#21262d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  button{font:inherit;color:inherit}
+
+  /* ── каркас ─────────────────────────────────────────────────────────── */
+  .app{display:grid;grid-template-columns:236px 1fr;min-height:100vh}
+  .side{background:var(--panel);border-right:1px solid var(--border);padding:14px 12px;position:sticky;top:0;height:100vh;overflow:auto}
+  .brand{display:flex;align-items:center;gap:9px;padding:6px 8px 14px}
+  .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent)}
+  .brand b{font-size:15px;letter-spacing:.2px}
+  .brand small{color:var(--muted);font-size:11px;display:block;font-weight:400}
+  .nav{display:flex;flex-direction:column;gap:2px;margin-top:6px}
+  .nav .grp{color:var(--muted2);font-size:11px;text-transform:uppercase;letter-spacing:.6px;padding:12px 9px 5px}
+  .nav a{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--radius-sm);color:var(--muted)}
+  .nav a:hover{background:var(--panel2);color:var(--text)}
+  .nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  .nav a .ic{width:18px;text-align:center;font-size:13px}
+  .nav a .badge{margin-left:auto;font-size:11px;background:var(--queued-soft);color:var(--queued);border-radius:20px;padding:1px 7px}
+  .nav a.on .badge{background:var(--accent);color:#fff}
+
+  .main{min-width:0;display:flex;flex-direction:column}
+  .top{background:var(--panel);border-bottom:1px solid var(--border);padding:11px 20px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:5}
+  .top h1{font-size:15px;margin:0;font-weight:600}
+  .top .path{color:var(--muted2);font-size:12px;font-family:var(--mono)}
+  .top .right{margin-left:auto;display:flex;align-items:center;gap:9px}
+  .wrap{padding:20px;max-width:1220px;width:100%}
+
+  /* ── банер макета ───────────────────────────────────────────────────── */
+  .mock-banner{background:var(--warn-soft);color:var(--warn);border-bottom:1px solid var(--border);padding:7px 20px;font-size:12.5px;display:flex;gap:10px;align-items:center}
+  .mock-banner b{font-weight:600}
+  .mock-banner .sp{margin-left:auto;display:flex;gap:8px;align-items:center;color:var(--muted)}
+
+  /* ── базові елементи ────────────────────────────────────────────────── */
+  .btn{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .btn:hover{border-color:var(--muted2)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{filter:brightness(1.07)}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+  .btn.ghost:hover{background:var(--panel2);color:var(--text)}
+  .btn.sm{padding:3px 8px;font-size:12.5px}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:2px 8px;border-radius:20px;background:var(--queued-soft);color:var(--queued);white-space:nowrap}
+  .chip.ok{background:var(--ok-soft);color:var(--ok)}
+  .chip.run{background:var(--run-soft);color:var(--run)}
+  .chip.warn{background:var(--warn-soft);color:var(--warn)}
+  .chip.err{background:var(--err-soft);color:var(--err)}
+  .chip.stall{background:var(--stall-soft);color:var(--stall)}
+  .chip.line{background:transparent;border:1px solid var(--border);color:var(--muted)}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius)}
+  .card .hd{padding:11px 14px;border-bottom:1px solid var(--border2);display:flex;align-items:center;gap:10px}
+  .card .hd h2{font-size:13.5px;margin:0;font-weight:600}
+  .card .hd .sp{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .card .bd{padding:14px}
+  .card .bd.tight{padding:0}
+  .sec-title{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted2);margin:22px 0 9px}
+  .sec-title:first-child{margin-top:0}
+  .muted{color:var(--muted)}
+  .tiny{font-size:12px}
+  .mono{font-family:var(--mono)}
+  input[type=text],input[type=search],select,textarea{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);padding:5px 8px}
+  input[type=range]{accent-color:var(--accent);width:120px;vertical-align:middle}
+  .row{display:flex;align-items:center;gap:9px}
+  .row.wrap{flex-wrap:wrap}
+  .sp{margin-left:auto}
+  .sep{height:1px;background:var(--border2);margin:12px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr}.app{grid-template-columns:1fr}.side{position:static;height:auto}}
+
+  /* ── джерела даних (перемикач) ──────────────────────────────────────── */
+  .src{display:none;font-family:var(--mono);font-size:11px;color:var(--accent);background:var(--accent-soft);border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap}
+  body.show-src .src{display:inline-block}
+
+  /* ── прогрес ────────────────────────────────────────────────────────── */
+  .bar{height:7px;background:var(--queued-soft);border-radius:20px;overflow:hidden;flex:1;min-width:90px}
+  .bar > i{display:block;height:100%;background:var(--accent);border-radius:20px;transition:width .4s linear}
+  .bar.ok > i{background:var(--ok)}
+  .bar.err > i{background:var(--err)}
+  .bar.stall > i{background:var(--stall)}
+
+  /* ── dropzone ───────────────────────────────────────────────────────── */
+  .drop{border:1.5px dashed var(--border);border-radius:var(--radius);background:var(--panel2);padding:26px 20px;text-align:center;cursor:pointer}
+  .drop:hover{border-color:var(--accent);background:var(--accent-soft)}
+  .drop .big{font-size:15px;font-weight:600;margin-bottom:4px}
+  .steps{display:flex;gap:6px;justify-content:center;margin-top:14px;font-size:12px;color:var(--muted)}
+  .steps span{padding:2px 9px;border-radius:20px;background:var(--panel);border:1px solid var(--border)}
+  .steps span.done{color:var(--ok);border-color:var(--ok)}
+
+  /* ── таблиці/списки ─────────────────────────────────────────────────── */
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted2);font-weight:600;padding:8px 12px;border-bottom:1px solid var(--border2)}
+  td{padding:10px 12px;border-bottom:1px solid var(--border2);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--panel2)}
+
+  .doc-row .name{font-weight:600}
+  .doc-row .sub{color:var(--muted);font-size:12.5px}
+
+  .job{display:flex;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border2);align-items:flex-start}
+  .job:last-child{border-bottom:none}
+  .job .st{width:20px;text-align:center;font-size:14px;padding-top:1px}
+  .job .body{flex:1;min-width:0}
+  .job .l1{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .job .l2{margin-top:6px;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted)}
+  .job .l2 .bar{max-width:320px}
+
+  /* ── редактор блоків ────────────────────────────────────────────────── */
+  .toolbar{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;display:flex;flex-direction:column;gap:10px;position:sticky;top:52px;z-index:4}
+  .modes{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+  .modes button{background:var(--panel);border:none;padding:5px 11px;cursor:pointer;color:var(--muted)}
+  .modes button.on{background:var(--accent);color:#fff;font-weight:600}
+  .blocks{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+  .blk{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);display:grid;grid-template-columns:52px 1fr;gap:0}
+  .blk.muted-blk{background:var(--panel2)}
+  .blk .gut{padding:11px 8px;border-right:1px solid var(--border2);display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--muted)}
+  .blk .gut .ord{font-family:var(--mono);font-size:12px;color:var(--muted2)}
+  .blk .gut .kind{font-size:11px;border:1px solid var(--border);border-radius:4px;padding:0 4px;font-family:var(--mono)}
+  .blk .gut input[type=checkbox]{accent-color:var(--accent)}
+  .blk .cnt{padding:12px 13px;min-width:0}
+  .blk .txt{font-size:14.5px;line-height:1.65;max-width:72ch}
+  .blk .txt.h{font-size:17px;font-weight:650}
+  .blk .txt.mono{font-family:var(--mono);font-size:13px}
+  .blk .txt q{quotes:"«" "»"}
+  .blk textarea{width:100%;max-width:72ch;min-height:64px;resize:vertical;font-size:14.5px;line-height:1.65;padding:8px 9px}
+  .blk .ctl{margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
+  .blk .ctl select{padding:3px 7px;font-size:12.5px}
+  .blk .prosody{font-family:var(--mono);font-size:11.5px;color:var(--muted);background:var(--panel2);border:1px solid var(--border2);border-radius:5px;padding:2px 7px}
+  .blk .save{font-size:11.5px}
+  .blk .save.dirty{color:var(--warn)} .blk .save.saving{color:var(--muted)} .blk .save.saved{color:var(--ok)}
+  .blk .expand{margin-top:8px;font-size:12.5px}
+  .blk .expand summary{cursor:pointer;color:var(--accent)}
+  .diff{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:9px;font-size:13px}
+  .diff .col{background:var(--panel2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:9px 10px}
+  .diff .col h4{margin:0 0 5px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted2)}
+  .diff ins{background:var(--ok-soft);color:var(--ok);text-decoration:none;border-radius:3px;padding:0 2px}
+  .diff del{background:var(--err-soft);color:var(--err);border-radius:3px;padding:0 2px}
+  .bulkbar{background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--radius);padding:9px 12px;display:flex;align-items:center;gap:12px;margin-top:12px;font-size:13px}
+
+  /* ── плеєр ──────────────────────────────────────────────────────────── */
+  .player{display:inline-flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--border2);border-radius:20px;padding:3px 10px 3px 4px;font-size:12px;color:var(--muted)}
+  .player .pb{width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;border:none;cursor:pointer;display:grid;place-items:center;font-size:10px}
+  .player .track{width:110px;height:4px;background:var(--queued-soft);border-radius:20px;overflow:hidden}
+  .player .track > i{display:block;height:100%;width:0;background:var(--accent)}
+
+  /* ── діалог ─────────────────────────────────────────────────────────── */
+  .ovl{position:fixed;inset:0;background:rgba(12,16,22,.45);display:none;place-items:center;z-index:50;padding:20px}
+  .ovl.on{display:grid}
+  .dlg{background:var(--panel);border-radius:12px;border:1px solid var(--border);max-width:520px;width:100%;overflow:hidden}
+  .dlg .hd{padding:14px 16px;border-bottom:1px solid var(--border2);font-weight:600}
+  .dlg .bd{padding:16px}
+  .dlg .ft{padding:12px 16px;border-top:1px solid var(--border2);display:flex;gap:9px;justify-content:flex-end}
+  dl.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0;font-size:13px}
+  dl.kv dt{color:var(--muted)}
+  dl.kv dd{margin:0;text-align:right;font-family:var(--mono)}
+
+  /* ── тост ───────────────────────────────────────────────────────────── */
+  .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:60}
+  .toast{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--radius-sm);padding:9px 13px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.12);max-width:340px}
+  .toast.ok{border-left-color:var(--ok)} .toast.err{border-left-color:var(--err)}
+
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+  .legend b{color:var(--text)}
+  .kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:var(--panel2)}
+  .screen{display:none} .screen.on{display:block}
+  .note{border-left:3px solid var(--accent);background:var(--panel2);padding:9px 12px;border-radius:0 var(--radius-sm) var(--radius-sm) 0;font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+
+<div class="mock-banner">
+  <b>Статичний макет концепції</b>
+  <span>дані вигадані · до API не підключений · реалізація — Jinja2 + htmx + Alpine.js (ADR-008)</span>
+  <span class="sp">
+    <label class="tiny" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+      <input type="checkbox" id="srcToggle"> показати джерела даних
+    </label>
+    <button class="btn sm" id="themeBtn">🌗 Тема</button>
+  </span>
+</div>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <span class="dot"></span>
+      <div><b>Voice Studio</b><small>локальне озвучення</small></div>
+    </div>
+    <nav class="nav">
+      <div class="grp">Робота</div>
+      <a href="#workspace" data-screen="workspace"><span class="ic">▤</span>Робоча стола</a>
+      <a href="#editor" data-screen="editor"><span class="ic">✎</span>Редактор<span class="badge">142</span></a>
+      <div class="grp">Синтез</div>
+      <a href="#queue" data-screen="queue"><span class="ic">≡</span>Черга<span class="badge">4</span></a>
+      <a href="#job" data-screen="job"><span class="ic">▶</span>Завдання #7</a>
+      <div class="grp">Налаштування</div>
+      <a href="#voices" data-screen="voices"><span class="ic">◍</span>Рушії та голоси</a>
+      <a href="#system" data-screen="system"><span class="ic">⚙</span>Система</a>
+    </nav>
+    <div class="sep"></div>
+    <p class="tiny muted" style="padding:0 9px">
+      Концепція: <span class="mono">docs/FRONTEND.md</span>
+    </p>
+  </aside>
+
+  <div class="main">
+    <div class="top">
+      <h1 id="screenTitle">Робоча стола</h1>
+      <span class="path" id="screenPath">/</span>
+      <div class="right">
+        <span class="chip line tiny">паралельно 2 · у черзі 1</span>
+        <span class="chip ok">● TTS-шлюз живий<span class="src">GET /api/v1/health</span></span>
+        <span class="chip line tiny mono">v0.1.0</span>
+      </div>
+    </div>
+
+    <div class="wrap">
+
+      <!-- ══════════════ 1. РОБОЧА СТОЛА ══════════════ -->
+      <section class="screen on" id="s-workspace">
+        <div class="drop" onclick="toast('У макеті завантаження не працює — це лише розкладка','ok')">
+          <div class="big">Перетягніть файл сюди або натисніть, щоб обрати</div>
+          <div class="muted tiny">.txt · .md — до 50 МБ<span class="src">allowed_extensions · MAX_UPLOAD_MB</span></div>
+          <div class="muted tiny" style="margin-top:3px">PDF / DOCX / EPUB — етап 2 плану</div>
+          <div class="steps">
+            <span class="done">1 · передача ✓</span>
+            <span class="done">2 · витяг блоків ✓</span>
+            <span>3 · нормалізація…</span>
+          </div>
+          <div class="row" style="justify-content:center;margin-top:10px">
+            <div class="bar" style="max-width:360px"><i style="width:68%"></i></div>
+            <span class="tiny muted">68%<span class="src">POST /ui/documents</span></span>
+          </div>
+        </div>
+
+        <div class="sec-title">Документи</div>
+        <div class="card">
+          <div class="hd">
+            <h2>4 документи</h2>
+            <div class="sp">
+              <input type="search" placeholder="пошук за назвою…" style="width:190px">
+              <select><option>усі</option><option>готові</option><option>зі змінами</option><option>з помилкою</option></select>
+            </div>
+          </div>
+          <div class="bd tight">
+            <table>
+              <thead><tr><th>Назва</th><th>Блоків</th><th>Змінено</th><th>Стан</th><th></th></tr></thead>
+              <tbody>
+                <tr class="doc-row">
+                  <td><div class="name">розділ-1.md</div><div class="sub">завантажено сьогодні, 10:24</div><span class="src">GET /api/v1/documents</span></td>
+                  <td>142</td><td>3</td>
+                  <td><span class="chip ok">готовий</span></td>
+                  <td style="text-align:right"><a class="btn sm primary" href="#editor">Відкрити</a></td>
+                </tr>
+                <tr class="doc-row">
+                  <td><div class="name">оповідання.txt</div><div class="sub">вчора, 21:02</div></td>
+                  <td>38</td><td>0</td>
+                  <td><span class="chip ok">готовий</span></td>
+                  <td style="text-align:right"><a class="btn sm" href="#editor">Відкрити</a></td>
+                </tr>
+                <tr class="doc-row">
+                  <td><div class="name">scan-book.pdf</div><div class="sub">вчора, 20:55</div></td>
+                  <td>—</td><td>—</td>
+                  <td><span class="chip err">схоже на скан · потрібен OCR</span></td>
+                  <td style="text-align:right"><button class="btn sm" disabled>Відкрити</button></td>
+                </tr>
+                <tr class="doc-row">
+                  <td><div class="name">тест.docx</div><div class="sub">вчора, 19:40</div></td>
+                  <td>—</td><td>—</td>
+                  <td><span class="chip warn">екстрактор — етап 2</span></td>
+                  <td style="text-align:right"><button class="btn sm" disabled>Відкрити</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="sec-title">Зараз виконується <span class="chip line tiny">паралельно 2 з 2</span></div>
+        <div class="card"><div class="bd tight">
+          <div class="job">
+            <div class="st">▶</div>
+            <div class="body">
+              <div class="l1"><b>#7 · розділ-1.md</b> <span class="chip run">виконується</span> <span class="chip line tiny">tetiana-high</span></div>
+              <div class="l2">
+                <div class="bar"><i id="wsBar" style="width:42%"></i></div>
+                <span id="wsPct">42%</span> · сегмент <span id="wsSeg">76</span>/180 · залишилось <span id="wsEta">~6 хв</span>
+                <button class="btn sm" style="margin-left:auto" onclick="toast('Скасування в макеті не виконується','err')">Скасувати</button>
+              </div>
+            </div>
+          </div>
+          <div class="job">
+            <div class="st">⏳</div>
+            <div class="body">
+              <div class="l1"><b>#8 · оповідання.txt</b> <span class="chip">у черзі · позиція 1</span> <span class="chip line tiny">mykyta-high</span></div>
+              <div class="l2"><span class="tiny">почнеться, коли звільниться слот<span class="src">SYNTH_CONCURRENCY = 2</span></span></div>
+            </div>
+          </div>
+        </div></div>
+
+        <div class="sec-title">Гарячі клавіші в редакторі</div>
+        <div class="card"><div class="bd">
+          <div class="legend">
+            <span><span class="kbd">J</span>/<span class="kbd">K</span> <b>навігація блоками</b></span>
+            <span><span class="kbd">Space</span> <b>прослухати блок</b></span>
+            <span><span class="kbd">E</span> <b>емоція</b></span>
+            <span><span class="kbd">S</span> <b>озвучувати/ні</b></span>
+            <span><span class="kbd">Ctrl</span>+<span class="kbd">S</span> <b>зберегти</b></span>
+            <span><span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">Enter</span> <b>озвучити все</b></span>
+          </div>
+        </div></div>
+      </section>
+
+      <!-- ══════════════ 2. РЕДАКТОР ══════════════ -->
+      <section class="screen" id="s-editor">
+        <div class="toolbar">
+          <div class="row wrap">
+            <a class="btn sm ghost" href="#workspace">← Документи</a>
+            <b>оповідання.txt</b>
+            <span class="muted tiny">142 блоки · 3 змінені · <span title="оцінка">≈28 хв аудіо</span><span class="src">GET /api/v1/documents/1</span></span>
+            <div class="sp row">
+              <select title="рушій"><option>Speaches (OpenAI-сумісний)</option><option disabled>ukrainian-tts — етап 3</option><option disabled>ZONOS2 — етап 3</option><option disabled>Chatterbox — без української</option></select>
+              <select title="голос"><option>tetiana-high · жіночий</option><option>mykyta-high · чоловічий</option><option>oleksa-high · чоловічий</option><option>lada-x_low · жіночий</option></select>
+              <button class="btn" onclick="toast('Прев’ю в макеті не синтезує — тут лише розкладка','ok')">▶ Прослухати блок</button>
+              <button class="btn primary" onclick="document.getElementById('ovl').classList.add('on')">Озвучити все →</button>
+            </div>
+          </div>
+          <div class="row wrap">
+            <div class="modes">
+              <button onclick="setMode(this)">Вихідний</button>
+              <button onclick="setMode(this)">Нормалізований</button>
+              <button class="on" onclick="setMode(this)">Мій</button>
+            </div>
+            <button class="btn sm ghost" onclick="toast('Нормалізацію перезапущено (у макеті — ні)','ok')">↻ Перенормалізувати<span class="src">POST /documents/{id}/normalize</span></button>
+            <span class="muted tiny">Показати:</span>
+            <label class="tiny row" style="gap:4px"><input type="checkbox" checked> озвучувані</label>
+            <label class="tiny row" style="gap:4px"><input type="checkbox"> лише змінені</label>
+            <label class="tiny row" style="gap:4px"><input type="checkbox"> лише з емоцією</label>
+            <input type="search" placeholder="пошук у тексті…" style="width:170px">
+          </div>
+        </div>
+
+        <div class="bulkbar">
+          <b>Виділено 3 блоки</b>
+          <span class="muted tiny">масова дія потребує bulk-PATCH (16.5)</span>
+          <div class="sp row">
+            <select class="tiny"><option>емоція ▾</option><option>neutral</option><option>warm</option><option>serious</option><option>joyful</option><option>sad</option></select>
+            <button class="btn sm">Застосувати</button>
+            <button class="btn sm ghost">Не озвучувати</button>
+            <button class="btn sm ghost">Зняти виділення</button>
+          </div>
+        </div>
+
+        <div class="blocks">
+          <!-- блок 1 -->
+          <div class="blk" data-block>
+            <div class="gut">
+              <span class="ord">01</span><span class="kind">¶</span>
+              <input type="checkbox" checked title="озвучувати">
+            </div>
+            <div class="cnt">
+              <div class="txt"><q>Доброго ранку, — сказала вона й усміхнулась. — Сідай, у нас є час.</q></div>
+              <div class="ctl">
+                <select data-emotion>
+                  <option value="neutral">😐 neutral</option>
+                  <option value="warm" selected>🙂 warm</option>
+                  <option value="serious">🧐 serious</option>
+                  <option value="joyful">😄 joyful</option>
+                  <option value="excited">🤩 excited</option>
+                  <option value="sad">😔 sad</option>
+                  <option value="tense">😬 tense</option>
+                  <option value="questioning">🤔 questioning</option>
+                </select>
+                <span class="tiny">інтенсивність</span>
+                <input type="range" data-intensity min="0" max="1" step="0.1" value="0.6">
+                <span class="prosody" data-prosody>—</span>
+                <span class="player" data-player>
+                  <button class="pb" onclick="play(this)">▶</button>
+                  <span class="track"><i></i></span>
+                  <span class="dur">3.4 с</span>
+                </span>
+                <span class="sp save saved">✓ Збережено 14:02<span class="src">PATCH /documents/1/blocks/1</span></span>
+              </div>
+              <details class="expand">
+                <summary>Різниця: вихідний / нормалізований</summary>
+                <div class="diff">
+                  <div class="col"><h4>Вихідний</h4>«Доброго ранку, — сказала вона й усміхнулась. — Сідай, у нас є час.»</div>
+                  <div class="col"><h4>Нормалізований</h4>«Доброго ранку <ins>— пауза —</ins> сказала вона й усміхнулась. <del>—</del> Сідай, у нас є час.»</div>
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <!-- блок 2: заголовок -->
+          <div class="blk" data-block>
+            <div class="gut">
+              <span class="ord">02</span><span class="kind">H2</span>
+              <input type="checkbox" checked title="озвучувати">
+            </div>
+            <div class="cnt">
+              <div class="txt h">Розділ другий</div>
+              <div class="ctl">
+                <select data-emotion>
+                  <option value="neutral" selected>😐 neutral</option>
+                  <option value="warm">🙂 warm</option>
+                  <option value="serious">🧐 serious</option>
+                  <option value="joyful">😄 joyful</option>
+                  <option value="excited">🤩 excited</option>
+                  <option value="sad">😔 sad</option>
+                  <option value="tense">😬 tense</option>
+                  <option value="questioning">🤔 questioning</option>
+                </select>
+                <span class="tiny">інтенсивність</span>
+                <input type="range" data-intensity min="0" max="1" step="0.1" value="0.5">
+                <span class="prosody" data-prosody>—</span>
+                <span class="player" data-player>
+                  <button class="pb" onclick="play(this)">▶</button>
+                  <span class="track"><i></i></span>
+                  <span class="dur">1.2 с</span>
+                </span>
+                <span class="sp save saved">✓ Збережено<span class="src">PATCH /documents/1/blocks/2</span></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- блок 3: редагований, незбережений -->
+          <div class="blk" data-block>
+            <div class="gut">
+              <span class="ord">03</span><span class="kind">¶</span>
+              <input type="checkbox" checked title="озвучувати">
+            </div>
+            <div class="cnt">
+              <textarea>Далі було тихо. Лише десь далеко, за рікою, гудів потяг — так, наче хтось нагадував, що світ іще не скінчився.</textarea>
+              <div class="ctl">
+                <select data-emotion>
+                  <option value="neutral">😐 neutral</option>
+                  <option value="warm">🙂 warm</option>
+                  <option value="serious">🧐 serious</option>
+                  <option value="joyful">😄 joyful</option>
+                  <option value="excited">🤩 excited</option>
+                  <option value="sad" selected>😔 sad</option>
+                  <option value="tense">😬 tense</option>
+                  <option value="questioning">🤔 questioning</option>
+                </select>
+                <span class="tiny">інтенсивність</span>
+                <input type="range" data-intensity min="0" max="1" step="0.1" value="0.8">
+                <span class="prosody" data-prosody>—</span>
+                <span class="player" data-player>
+                  <button class="pb" onclick="play(this)">▶</button>
+                  <span class="track"><i></i></span>
+                  <span class="dur">6.1 с</span>
+                </span>
+                <span class="sp save dirty">● Незбережено<span class="src">PATCH /documents/1/blocks/3</span></span>
+              </div>
+              <div class="note tiny" style="margin-top:9px">
+                Автозбереження з дебаунсом 1.5 с (розд. 6.4). Просодія рахується одразу,
+                а чип лишається «Незбережено», доки сервер не підтвердить.
+              </div>
+            </div>
+          </div>
+
+          <!-- блок 4: код, не озвучується -->
+          <div class="blk muted-blk" data-block>
+            <div class="gut">
+              <span class="ord">04</span><span class="kind">&lt;/&gt;</span>
+              <input type="checkbox" title="озвучувати">
+            </div>
+            <div class="cnt">
+              <div class="txt mono">def synthesize(text, voice):<br>&nbsp;&nbsp;&nbsp;&nbsp;return engine.say(text, voice)</div>
+              <div class="ctl">
+                <span class="chip">не озвучується</span>
+                <span class="tiny">код і таблиці типово пропускаються<span class="src">Block.speak = false</span></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- блок 5: обрізання прев'ю -->
+          <div class="blk" data-block>
+            <div class="gut">
+              <span class="ord">05</span><span class="kind">¶</span>
+              <input type="checkbox" checked title="озвучувати">
+            </div>
+            <div class="cnt">
+              <div class="txt">Вона відчинила зошит і довго дивилася на першу сторінку — ту саму, яку переписувала чотири рази, щоразу повертаючись до першого речення, бо воно не звучало так, як треба, і це дратувало більше, ніж сама робота.</div>
+              <div class="ctl">
+                <select data-emotion>
+                  <option value="neutral" selected>😐 neutral</option>
+                  <option value="warm">🙂 warm</option>
+                  <option value="serious">🧐 serious</option>
+                  <option value="joyful">😄 joyful</option>
+                  <option value="excited">🤩 excited</option>
+                  <option value="sad">😔 sad</option>
+                  <option value="tense">😬 tense</option>
+                  <option value="questioning">🤔 questioning</option>
+                </select>
+                <span class="tiny">інтенсивність</span>
+                <input type="range" data-intensity min="0" max="1" step="0.1" value="0.5">
+                <span class="prosody" data-prosody>—</span>
+                <span class="player" data-player>
+                  <button class="pb" onclick="play(this)">▶</button>
+                  <span class="track"><i></i></span>
+                  <span class="dur">7.8 с</span>
+                </span>
+                <span class="sp save saved">✓ Збережено</span>
+              </div>
+              <div class="note tiny" style="margin-top:9px">
+                ⚠ 233 символи з 500 — долетить повністю. Якщо блок довший за
+                <span class="mono">caps.max_chars</span>, прев'ю обріже текст мовчки,
+                тому попередження показується <b>до</b> натискання (розд. 6.5).
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="row" style="justify-content:center;margin-top:14px">
+          <button class="btn">Показати ще 50 блоків (06–55 з 142)</button>
+        </div>
+        <p class="tiny muted" style="text-align:center;margin-top:8px">
+          Блоки рендеряться сторінками по 50 — книга на 1000+ блоків не вміщується в DOM (розд. 6.7).
+        </p>
+      </section>
+
+      <!-- ══════════════ 3. ЧЕРГА ══════════════ -->
+      <section class="screen" id="s-queue">
+        <div class="sec-title">Черга завдань</div>
+        <div class="card"><div class="bd tight">
+          <div class="job">
+            <div class="st">⏳</div>
+            <div class="body">
+              <div class="l1"><b>#8 · оповідання.txt</b> <span class="chip">у черзі · позиція 1</span> <span class="chip line tiny">tetiana-high</span></div>
+              <div class="l2"><span class="tiny">48 сегментів · чекає на слот</span></div>
+            </div>
+          </div>
+          <div class="job">
+            <div class="st">▶</div>
+            <div class="body">
+              <div class="l1"><b>#7 · розділ-1.md</b> <span class="chip run">виконується</span> <span class="chip line tiny">tetiana-high</span></div>
+              <div class="l2">
+                <div class="bar"><i id="qBar" style="width:42%"></i></div>
+                <span id="qPct">42%</span> · <span id="qSeg">76</span>/180 · <span id="qEta">~6 хв</span>
+              </div>
+              <div class="l2"><span class="tiny">поточний блок 11 «Розділ другий»<span class="src">SSE: progress</span></span></div>
+              <div class="l2"><span class="player" data-player><button class="pb" onclick="play(this)">▶</button><span class="track"><i></i></span><span>слухати готові сегменти</span></span></div>
+              <div class="row" style="margin-top:8px;gap:7px">
+                <a class="btn sm" href="#job">Деталі</a>
+                <button class="btn sm" onclick="toast('Скасування в макеті не виконується','err')">Скасувати<span class="src">POST /jobs/7/cancel</span></button>
+              </div>
+            </div>
+          </div>
+          <div class="job">
+            <div class="st">✓</div>
+            <div class="body">
+              <div class="l1"><b>#6 · глава-3.md</b> <span class="chip ok">готово</span> <span class="chip line tiny">mykyta-high</span></div>
+              <div class="l2"><span class="tiny">4:12 · 18.4 МБ · −18 LUFS · 24 кГц</span><span class="sp"></span>
+                <button class="btn sm primary" onclick="toast('У макеті файл не завантажується','ok')">⬇ Завантажити MP3<span class="src">GET /jobs/6/download</span></button>
+              </div>
+            </div>
+          </div>
+          <div class="job">
+            <div class="st">✗</div>
+            <div class="body">
+              <div class="l1"><b>#5 · тест.txt</b> <span class="chip err">збій</span> <span class="chip line tiny">lada-x_low</span></div>
+              <div class="l2"><span class="tiny">TTS-шлюз недоступний: connection refused до 127.0.0.1:8001</span><span class="src">JobRead.error</span></div>
+              <div class="row" style="margin-top:8px;gap:7px">
+                <button class="btn sm" onclick="toast('Повтор потребує POST /jobs/{id}/retry (16.1)','err')">Повторити</button>
+                <button class="btn sm ghost">Деталі</button>
+              </div>
+            </div>
+          </div>
+          <div class="job">
+            <div class="st">⚠</div>
+            <div class="body">
+              <div class="l1"><b>#4 · книга.md</b> <span class="chip stall">перервано перезапуском процесу</span> <span class="chip line tiny">tetiana-high</span></div>
+              <div class="l2"><span class="tiny">142 з 640 сегментів готові на диску · потрібне повторне постачання в чергу</span></div>
+              <div class="note tiny" style="margin-top:9px">
+                <b>Знахідка 16.2:</b> сьогодні це завдання не воскресить ніщо — черга живе
+                лише в пам'яті процесу, а <span class="mono">lifespan()</span> її скидає.
+                Потрібне повторне постачання незавершених завдань при старті.
+              </div>
+              <div class="row" style="margin-top:8px;gap:7px">
+                <button class="btn sm primary" onclick="toast('Продовження потребує фіксу 16.2','err')">Продовжити (142/640)</button>
+              </div>
+            </div>
+          </div>
+        </div></div>
+
+        <div class="sec-title">Як читається прогрес</div>
+        <div class="grid2">
+          <div class="card"><div class="bd">
+            <dl class="kv">
+              <dt>Джерело прогресу</dt><dd>SSE /jobs/7/events</dd>
+              <dt>Знімок перед SSE</dt><dd>GET /jobs/7</dd>
+              <dt>Реконект</dt><dd>експоненційний, 1→10 с</dd>
+              <dt>Keepalive сервера</dt><dd>кожні 30 с (ігнорується)</dd>
+              <dt>Деградація</dt><dd>опитування картки, 3 с</dd>
+              <dt>ETA</dt><dd>ковзне середнє за 5 подій</dd>
+            </dl>
+          </div></div>
+          <div class="card"><div class="bd">
+            <div class="note">
+              SSE віддає лише <b>майбутні</b> події: підписка створюється в момент
+              запиту, <span class="mono">Last-Event-ID</span> не підтримується, події-знімка
+              немає. Тому без попереднього <span class="mono">GET</span> сторінка після F5
+              показує 0% і виглядає «мертвою» (розд. 12).
+            </div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ══════════════ 4. ЗАВДАННЯ ══════════════ -->
+      <section class="screen" id="s-job">
+        <div class="card">
+          <div class="hd">
+            <a class="btn sm ghost" href="#queue">← Черга</a>
+            <h2>#7 · розділ-1.md</h2>
+            <span class="chip run">виконується</span>
+            <span class="chip line tiny">tetiana-high · Speaches</span>
+          </div>
+          <div class="bd">
+            <div class="row" style="gap:12px">
+              <div class="bar" style="max-width:460px"><i id="jBar" style="width:42%"></i></div>
+              <b id="jPct">42%</b>
+              <span class="muted tiny"><span id="jSeg">76</span>/180 сегментів · 1:52 минуло · залишилось <span id="jEta">~6 хв</span></span>
+              <div class="sp row">
+                <button class="btn" onclick="toast('Скасування в макеті не виконується','err')">Скасувати</button>
+                <button class="btn primary" disabled title="стане активним після finished">⬇ Завантажити</button>
+              </div>
+            </div>
+            <div class="note" style="margin-top:12px">
+              Готові сегменти можна слухати <b>одразу</b>, не чекаючи завершення: кожен
+              сегмент — окремий WAV на диску (ADR-007). Це потребує
+              <span class="mono">GET /jobs/{id}/segments</span> і
+              <span class="mono">/segments/{ord}/audio</span> — у коді їх немає (16.1).
+            </div>
+          </div>
+        </div>
+
+        <div class="sec-title">Сегменти</div>
+        <div class="card"><div class="bd tight">
+          <table>
+            <thead><tr><th>№</th><th>Блок</th><th>Текст</th><th>Профіль</th><th>Тривалість</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="mono">74</td><td class="mono">11</td><td>«Доброго ранку, — сказала вона…»</td><td class="mono tiny">0.98× · 460 мс</td><td>3.4 с</td>
+                <td style="text-align:right"><span class="player" data-player><button class="pb" onclick="play(this)">▶</button><span class="track"><i></i></span></span></td></tr>
+              <tr><td class="mono">75</td><td class="mono">11</td><td>«Сідай, у нас є час.»</td><td class="mono tiny">0.98× · 460 мс</td><td>1.9 с</td>
+                <td style="text-align:right"><span class="player" data-player><button class="pb" onclick="play(this)">▶</button><span class="track"><i></i></span></span></td></tr>
+              <tr><td class="mono">76</td><td class="mono">12</td><td>Розділ другий</td><td class="mono tiny">1.00× · 400 мс</td><td>1.2 с</td>
+                <td style="text-align:right"><span class="player" data-player><button class="pb" onclick="play(this)">▶</button><span class="track"><i></i></span></span></td></tr>
+              <tr><td class="mono">77</td><td class="mono">13</td><td>Далі було тихо…</td><td class="mono tiny">0.88× · 900 мс</td><td>—</td>
+                <td style="text-align:right"><span class="chip run">синтезується</span></td></tr>
+              <tr><td class="mono">78</td><td class="mono">13</td><td>Лише десь далеко, за рікою, гудів потяг…</td><td class="mono tiny">0.88× · 900 мс</td><td>—</td>
+                <td style="text-align:right"><span class="chip">у черзі</span></td></tr>
+            </tbody>
+          </table>
+          <div class="bd"><button class="btn sm">Показати всі 180 сегментів</button></div>
+        </div></div>
+
+        <div class="sec-title">Параметри збірки</div>
+        <div class="card"><div class="bd">
+          <dl class="kv">
+            <dt>Пауза між блоками</dt><dd>400 мс</dd>
+            <dt>Цільова гучність</dt><dd>−18 LUFS (EBU R128)</dd>
+            <dt>Частота</dt><dd>24 000 Гц</dd>
+            <dt>Формат виходу</dt><dd>MP3</dd>
+            <dt>Рушій / голос</dt><dd>openai_compat / uk_UA-tetiana-high</dd>
+          </dl>
+          <div class="note tiny" style="margin-top:11px">
+            Вибір формату прихований: сьогодні параметр <span class="mono">?format=</span> змінює
+            лише <span class="mono">Content-Type</span>, а файл віддається той самий, тож
+            «WAV» завантажив би MP3 із заголовком <span class="mono">audio/wav</span> (16.3).
+          </div>
+        </div></div>
+      </section>
+
+      <!-- ══════════════ 5. РУШІЇ ТА ГОЛОСИ ══════════════ -->
+      <section class="screen" id="s-voices">
+        <div class="sec-title">Доступні рушії</div>
+        <div class="card">
+          <div class="hd"><h2>● Speaches — OpenAI-сумісний шлюз</h2><span class="chip ok">підключено</span></div>
+          <div class="bd">
+            <div class="row wrap" style="gap:6px">
+              <span class="chip line tiny">емоції нативно: ні</span>
+              <span class="chip line tiny">теги емоцій: ні</span>
+              <span class="chip line tiny">клонування: ні</span>
+              <span class="chip line tiny">темп: так</span>
+              <span class="chip line tiny">стрімінг: так</span>
+              <span class="chip line tiny">макс. 500 символів</span>
+              <span class="chip line tiny">22 050 Гц</span>
+              <span class="src">GET /api/v1/engines</span>
+            </div>
+            <div class="note tiny" style="margin-top:11px">
+              Рушій не вміє емоцій — вираз бере на себе шар просодії: темп, паузи,
+              гучність сегмента (ADR-004). Це керована просодія, а не акторська гра моделі.
+            </div>
+            <div class="sep"></div>
+            <table>
+              <thead><tr><th>Голос</th><th>Мова</th><th>Стать</th><th></th></tr></thead>
+              <tbody>
+                <tr><td class="mono">uk_UA-tetiana-high</td><td>uk_UA</td><td>жіночий</td>
+                  <td style="text-align:right"><span class="player" data-player><button class="pb" onclick="play(this)">▶</button><span class="track"><i></i></span><span>еталонна фраза</span></span></td></tr>
+                <tr><td class="mono">uk_UA-mykyta-high</td><td>uk_UA</td><td>чоловічий</td>
+                  <td style="text-align:right"><span class="player" data-player><button class="pb" onclick="play(this)">▶</button><span class="track"><i></i></span><span>еталонна фраза</span></span></td></tr>
+                <tr><td class="mono">uk_UA-oleksa-high</td><td>uk_UA</td><td>чоловічий</td>
+                  <td style="text-align:right"><span class="player" data-player><button class="pb" onclick="play(this)">▶</button><span class="track"><i></i></span><span>еталонна фраза</span></span></td></tr>
+                <tr><td class="mono">uk_UA-lada-x_low</td><td>uk_UA</td><td>жіночий</td>
+                  <td style="text-align:right"><span class="player" data-player><button class="pb" onclick="play(this)">▶</button><span class="track"><i></i></span><span>еталонна фраза</span></span></td></tr>
+              </tbody>
+            </table>
+            <p class="tiny muted" style="margin:12px 0 0">
+              Прослуховування голосу = прев'ю <b>однієї еталонної фрази</b> для всіх голосів,
+              щоб порівняння було чесним. Окремі семпли (<span class="mono">voices.sample_path</span>)
+              у схемі є, але не використовуються (16.6).
+            </p>
+          </div>
+        </div>
+
+        <div class="sec-title">У каталозі, але не підключені</div>
+        <div class="card"><div class="bd tight">
+          <div class="job"><div class="st">○</div><div class="body">
+            <div class="l1"><b>ukrainian-tts</b> <span class="chip line tiny">ESPNet · автонаголос</span> <span class="chip">етап 3</span></div>
+            <div class="l2"><span class="tiny">Адаптер не реалізовано. Прямий in-process інференс, MIT.</span></div>
+          </div></div>
+          <div class="job"><div class="st">○</div><div class="body">
+            <div class="l1"><b>ZONOS2</b> <span class="chip line tiny">7.6B MoE · Apache-2.0</span> <span class="chip warn">ризик R2</span></div>
+            <div class="l2"><span class="tiny">Єдиний кандидат: емоції + українська + клонування. Real-time factor на CPU <b>не виміряний</b> — розвилка етапу 3.1.</span></div>
+          </div></div>
+          <div class="job"><div class="st">○</div><div class="body">
+            <div class="l1"><b>Chatterbox Multilingual V3</b> <span class="chip line tiny">23 мови</span> <span class="chip err">української немає</span></div>
+            <div class="l2"><span class="tiny">Уміє емоції нативно, але української серед мов немає — для цього проєкту непридатний.</span></div>
+          </div></div>
+        </div></div>
+      </section>
+
+      <!-- ══════════════ 6. СИСТЕМА ══════════════ -->
+      <section class="screen" id="s-system">
+        <div class="grid2">
+          <div class="card">
+            <div class="hd"><h2>Стан системи</h2><span class="chip ok">● ok</span></div>
+            <div class="bd">
+              <dl class="kv">
+                <dt>Версія</dt><dd>0.1.0</dd>
+                <dt>Тека даних</dt><dd>…/voice-studio/data</dd>
+                <dt>Запис у теку</dt><dd>так</dd>
+                <dt>TTS-шлюз</dt><dd>127.0.0.1:8001/v1</dd>
+                <dt>Шлюз зараз</dt><dd>живий · 240 мс</dd>
+                <dt>Рушій за замовч.</dt><dd>openai_compat</dd>
+                <dt>Голос за замовч.</dt><dd>uk_UA-tetiana-high</dd>
+                <dt>Паралельних синтезів</dt><dd>2</dd>
+                <dt>Цільова гучність</dt><dd>−18 LUFS</dd>
+              </dl>
+              <div class="sep"></div>
+              <div class="row">
+                <button class="btn sm" onclick="toast('Перевірку шлюзу треба додати: GET /health/tts (16.1)','ok')">Перевірити шлюз зараз</button>
+                <span class="tiny muted">health не пробує шлюз — лише повідомляє адресу</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="hd"><h2>Пресети</h2><span class="chip warn">ендпоінтів немає</span></div>
+            <div class="bd">
+              <table>
+                <tbody>
+                  <tr><td>Аудіокнига, теплий голос<div class="tiny muted">tetiana-high · warm · 0.5</div></td>
+                    <td style="text-align:right"><button class="btn sm">Застосувати</button> <button class="btn sm ghost">×</button></td></tr>
+                  <tr><td>Новини, чітко<div class="tiny muted">mykyta-high · serious · 0.7</div></td>
+                    <td style="text-align:right"><button class="btn sm">Застосувати</button> <button class="btn sm ghost">×</button></td></tr>
+                </tbody>
+              </table>
+              <div class="sep"></div>
+              <button class="btn sm" onclick="toast('Пресети потребують CRUD-ендпоінтів (16.8)','ok')">Зберегти поточні як пресет</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sec-title">Що робить кожна емоція <span class="chip line tiny">керована просодія, а не гра моделі</span></div>
+        <div class="card"><div class="bd tight">
+          <table>
+            <thead><tr><th>Емоція</th><th>Темп</th><th>Тон</th><th>Гучність</th><th>Пауза після</th><th>Мнемоніка</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">neutral</td><td class="mono">1.00×</td><td class="mono">0.0</td><td class="mono">0 дБ</td><td class="mono">400 мс</td><td class="muted tiny">база</td></tr>
+              <tr><td class="mono">warm</td><td class="mono">0.96×</td><td class="mono">−0.5</td><td class="mono">0 дБ</td><td class="mono">500 мс</td><td class="muted tiny">🙂 тепліше, повільніше</td></tr>
+              <tr><td class="mono">serious</td><td class="mono">0.94×</td><td class="mono">−1.0</td><td class="mono">−1 дБ</td><td class="mono">650 мс</td><td class="muted tiny">🧐 вагомо</td></tr>
+              <tr><td class="mono">joyful</td><td class="mono">1.08×</td><td class="mono">+1.5</td><td class="mono">+1 дБ</td><td class="mono">350 мс</td><td class="muted tiny">😄 швидше й вище</td></tr>
+              <tr><td class="mono">excited</td><td class="mono">1.15×</td><td class="mono">+2.0</td><td class="mono">+2 дБ</td><td class="mono">250 мс</td><td class="muted tiny">🤩 найшвидше</td></tr>
+              <tr><td class="mono">sad</td><td class="mono">0.88×</td><td class="mono">−1.5</td><td class="mono">−2 дБ</td><td class="mono">900 мс</td><td class="muted tiny">😔 найдовші паузи</td></tr>
+              <tr><td class="mono">tense</td><td class="mono">1.05×</td><td class="mono">+1.0</td><td class="mono">0 дБ</td><td class="mono">180 мс</td><td class="muted tiny">😬 рвано</td></tr>
+              <tr><td class="mono">questioning</td><td class="mono">1.02×</td><td class="mono">+1.0</td><td class="mono">0 дБ</td><td class="mono">450 мс</td><td class="muted tiny">🤔 питально</td></tr>
+            </tbody>
+          </table>
+          <div class="bd">
+            <p class="tiny muted" style="margin:0">
+              Значення — відхилення від <span class="mono">neutral</span> при інтенсивності 1.0.
+              Інтенсивність масштабує відхилення лінійно: 0 = нейтрально, 1 = повний профіль.
+              Зсув тону — DSP, типово вимкнений (ADR-004). Джерело:
+              <span class="mono">GET /api/v1/emotions</span>.
+            </p>
+          </div>
+        </div></div>
+
+        <div class="sec-title">Передумови, без яких інтерфейс не запуститься</div>
+        <div class="card"><div class="bd">
+          <div class="note">
+            <b>Перевірено:</b> <span class="mono">/api/v1/documents</span> і
+            <span class="mono">/api/v1/jobs</span> сьогодні повертають <b>500</b>
+            (<span class="mono">InvalidRequestError</span> на
+            <span class="mono">relationship("list['Block']")</span>), а наївний
+            <span class="mono">datetime</span> не пишеться в SQLite. Працюють лише
+            <span class="mono">/health</span>, <span class="mono">/engines</span>,
+            <span class="mono">/emotions</span> і <span class="mono">/preview</span>.
+            Фаза F0 концепції — спершу закрити ці два блокери.
+          </div>
+        </div></div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<!-- діалог «Озвучити все» -->
+<div class="ovl" id="ovl" onclick="if(event.target===this)this.classList.remove('on')">
+  <div class="dlg">
+    <div class="hd">Озвучити весь документ?</div>
+    <div class="bd">
+      <dl class="kv">
+        <dt>Документ</dt><dd>оповідання.txt</dd>
+        <dt>Блоків до синтезу</dt><dd>139 з 142</dd>
+        <dt>Сегментів (оцінка)</dt><dd>≈180</dd>
+        <dt>Рушій / голос</dt><dd>Speaches / tetiana-high</dd>
+        <dt>Оцінка часу</dt><dd>≈12–20 хв на CPU</dd>
+        <dt>Оцінка аудіо</dt><dd>≈28 хв</dd>
+      </dl>
+      <div class="note tiny" style="margin-top:12px">
+        Оцінки за символами й швидкістю рушія — можуть помилятися вдвічі
+        (ARCHITECTURE §8). Точний real-time factor — задача
+        <span class="mono">scripts/benchmark.py</span>, він ще не виміряний.
+        Синтез можна скасувати; готові сегменти не синтезуються вдруге.
+      </div>
+    </div>
+    <div class="ft">
+      <button class="btn" onclick="document.getElementById('ovl').classList.remove('on')">Скасувати</button>
+      <button class="btn primary" onclick="document.getElementById('ovl').classList.remove('on');toast('Завдання #9 поставлено в чергу (у макеті — ні)','ok')">Почати синтез</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+"use strict";
+
+/* ── навігація між екранами макета ───────────────────────────────────── */
+const TITLES = {
+  workspace: ["Робоча стола", "/"],
+  editor:    ["Редактор документа", "/documents/1"],
+  queue:     ["Черга завдань", "/jobs"],
+  job:       ["Завдання #7", "/jobs/7"],
+  voices:    ["Рушії та голоси", "/voices"],
+  system:    ["Система", "/settings"]
+};
+
+function show(name) {
+  const target = TITLES[name] ? name : "workspace";
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("on"));
+  document.getElementById("s-" + target).classList.add("on");
+  document.querySelectorAll(".nav a").forEach(a =>
+    a.classList.toggle("on", a.dataset.screen === target));
+  document.getElementById("screenTitle").textContent = TITLES[target][0];
+  document.getElementById("screenPath").textContent = TITLES[target][1];
+  window.scrollTo({top: 0, behavior: "instant"});
+}
+window.addEventListener("hashchange", () => show(location.hash.slice(1)));
+show(location.hash.slice(1));
+
+/* ── перемикачі ──────────────────────────────────────────────────────── */
+document.getElementById("srcToggle").addEventListener("change", e =>
+  document.body.classList.toggle("show-src", e.target.checked));
+document.getElementById("themeBtn").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  document.documentElement.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
+});
+function setMode(btn) {
+  btn.parentElement.querySelectorAll("button").forEach(b => b.classList.remove("on"));
+  btn.classList.add("on");
+}
+
+/* ── просодія: та сама формула, що get_prosody() у profiles.py ──────── */
+/* Профілі = відхилення від neutral; intensity масштабує лінійно.        */
+const NEUTRAL = {speed: 1.00, pitch: 0.0, energy: 0.0, pause: 400};
+const PROFILES = {
+  neutral:     {speed: 1.00, pitch:  0.0, energy:  0.0, pause: 400},
+  warm:        {speed: 0.96, pitch: -0.5, energy:  0.0, pause: 500},
+  serious:     {speed: 0.94, pitch: -1.0, energy: -1.0, pause: 650},
+  joyful:      {speed: 1.08, pitch:  1.5, energy:  1.0, pause: 350},
+  excited:     {speed: 1.15, pitch:  2.0, energy:  2.0, pause: 250},
+  sad:         {speed: 0.88, pitch: -1.5, energy: -2.0, pause: 900},
+  tense:       {speed: 1.05, pitch:  1.0, energy:  0.0, pause: 180},
+  questioning: {speed: 1.02, pitch:  1.0, energy:  0.0, pause: 450}
+};
+const lerp = (a, b, t) => a + (b - a) * t;
+
+function prosodyText(emotion, intensity) {
+  const p = PROFILES[emotion] || NEUTRAL;
+  const t = Math.max(0, Math.min(1, intensity));
+  const speed = lerp(NEUTRAL.speed, p.speed, t);
+  const pause = Math.round(lerp(NEUTRAL.pause, p.pause, t));
+  const pitch = lerp(NEUTRAL.pitch, p.pitch, t);
+  return "темп " + speed.toFixed(2) + "× · тон " + (pitch >= 0 ? "+" : "") +
+         pitch.toFixed(1) + " · пауза " + pause + " мс";
+}
+
+function refreshProsody(root) {
+  const sel = root.querySelector("[data-emotion]");
+  const rng = root.querySelector("[data-intensity]");
+  const out = root.querySelector("[data-prosody]");
+  if (!sel || !rng || !out) return;
+  out.textContent = prosodyText(sel.value, parseFloat(rng.value));
+}
+
+document.querySelectorAll("[data-block]").forEach(blk => {
+  refreshProsody(blk);
+  const sel = blk.querySelector("[data-emotion]");
+  const rng = blk.querySelector("[data-intensity]");
+  if (sel) sel.addEventListener("change", () => refreshProsody(blk));
+  if (rng) rng.addEventListener("input", () => refreshProsody(blk));
+  const ta = blk.querySelector("textarea");
+  if (ta) {
+    const save = blk.querySelector(".save");
+    ta.addEventListener("input", () => {
+      save.className = "save dirty";
+      save.textContent = "● Незбережено";
+    });
+    ta.addEventListener("blur", () => {
+      save.className = "save saving";
+      save.textContent = "◌ Зберігаю…";
+      setTimeout(() => { save.className = "save saved"; save.textContent = "✓ Збережено"; }, 700);
+    });
+  }
+  const cb = blk.querySelector(".gut input[type=checkbox]");
+  if (cb) cb.addEventListener("change", () => blk.classList.toggle("muted-blk", !cb.checked));
+});
+
+/* ── плеєр ───────────────────────────────────────────────────────────── */
+let playing = null;
+function play(btn) {
+  const player = btn.closest("[data-player]");
+  const track = player.querySelector(".track > i");
+  if (playing) {                       // одночасне відтворення заборонене
+    clearInterval(playing.timer);
+    playing.track.style.width = "0%";
+    playing.btn.textContent = "▶";
+    if (playing.btn === btn) { playing = null; return; }
+  }
+  btn.textContent = "⏸";
+  let pct = 0;
+  const timer = setInterval(() => {
+    pct = Math.min(100, pct + 4);
+    track.style.width = pct + "%";
+    if (pct >= 100) {
+      clearInterval(timer);
+      btn.textContent = "▶";
+      track.style.width = "0%";
+      if (playing && playing.btn === btn) playing = null;
+    }
+  }, 90);
+  playing = {btn, track, timer};
+}
+
+/* ── тости ───────────────────────────────────────────────────────────── */
+function toast(text, kind) {
+  const el = document.createElement("div");
+  el.className = "toast " + (kind || "");
+  el.textContent = text;
+  document.getElementById("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+
+/* ── імітація прогресу завдання (щоб було видно, як воно «дихає») ────── */
+let pct = 42;
+setInterval(() => {
+  if (pct >= 99) pct = 42;
+  pct += 0.6;
+  const seg = Math.min(180, Math.round(pct * 1.8));
+  const eta = Math.max(1, Math.round(((100 - pct) / 100) * 12));
+  const set = (id, val, width) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (width) el.style.width = val; else el.textContent = val;
+  };
+  set("wsBar", pct.toFixed(1) + "%", true);
+  set("wsPct", pct.toFixed(0) + "%");
+  set("wsSeg", seg);
+  set("wsEta", "~" + eta + " хв");
+  set("qBar", pct.toFixed(1) + "%", true);
+  set("qPct", pct.toFixed(0) + "%");
+  set("qSeg", seg);
+  set("qEta", "~" + eta + " хв");
+  set("jBar", pct.toFixed(1) + "%", true);
+  set("jPct", pct.toFixed(0) + "%");
+  set("jSeg", seg);
+  set("jEta", "~" + eta + " хв");
+}, 900);
+</script>
+</body>
+</html>
