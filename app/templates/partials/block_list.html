@@ -1,0 +1,20 @@
+{#
+  Список блоків — фрагмент. Використовується і сторінкою редактора,
+  і htmx-довантаженням наступної сторінки (GET /ui/documents/{id}/blocks).
+#}
+{% for view in views %}
+  {% include "partials/block_row.html" %}
+{% endfor %}
+
+{% if has_more %}
+  <div class="more-sentinel"
+       hx-get="/ui/documents/{{ document.id }}/blocks?mode={{ mode }}&offset={{ next_offset }}&q={{ query | urlencode }}&only_edited={{ 'true' if only_edited else 'false' }}&emotion={{ emotion_filter }}&compact={{ 'true' if compact else 'false' }}"
+       hx-trigger="revealed"
+       hx-swap="outerHTML">
+    <button class="btn" type="button">Показати ще {{ page_size }} блоків</button>
+  </div>
+{% elif total > 0 %}
+  <p class="tiny muted pager-note">
+    Це всі блоки за поточним фільтром ({{ filtered_total }} із {{ total }}).
+  </p>
+{% endif %}

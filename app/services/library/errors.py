@@ -19,6 +19,10 @@ class ExtractorUnavailableError(LibraryError):
     """Формат дозволено, але екстрактор ще не реалізовано (API: 422)."""
 
 
+class ScanPdfError(LibraryError):
+    """PDF без текстового шару — потрібен OCR (API: 422)."""
+
+
 class UploadTooLargeError(LibraryError):
     """Файл перевищує MAX_UPLOAD_MB (API: 413)."""
 

@@ -19,13 +19,18 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from sqlmodel import Session, select
 
+from app.config import get_settings
 from app.db import get_session
-from app.models import Job
+from app.models import Block, Document, Job, JobStatus, Segment, utc_now
+from app.services import engines as engines_service
+from app.services import presets as presets_service
+from app.services.engines import EngineNotFoundError
 from app.services.expression.profiles import all_profiles_dict
 from app.services.library import documents as library
 from app.services.library.errors import (
@@ -34,7 +39,7 @@ from app.services.library.errors import (
     UnsupportedFormatError,
     UploadTooLargeError,
 )
-from app.services.system import health_snapshot
+from app.services.system import health_snapshot, probe_tts_gateway, tts_ready_for_synthesis
 from app.ui import presentation
 from app.ui.templating import templates
 
@@ -51,6 +56,23 @@ FLASH_MESSAGES: dict[str, tuple[str, str]] = {
     "duplicate":  ("Цей файл уже завантажено — відкрито наявну копію.", "warn"),
     "normalized": ("Нормалізацію перезапущено.", "ok"),
     "deleted":    ("Документ видалено.", "ok"),
+    "already_running": (
+        "Цей документ уже озвучується — відкрито наявне завдання.",
+        "warn",
+    ),
+    "tts_not_ready": (
+        "Синтез не запущено: TTS-шлюз недоступний або потрібної моделі в ньому немає. "
+        "Деталі — на сторінці «Система», кнопка «Перевірити шлюз».",
+        "err",
+    ),
+    "preset_applied": (
+        "Емоцію пресета застосовано до всіх озвучуваних блоків.",
+        "ok",
+    ),
+    "nothing_to_speak": (
+        "Немає жодного озвучуваного блоку з непорожнім текстом — синтезувати нічого.",
+        "warn",
+    ),
 }
 
 EMOTION_ORDER = (
@@ -154,7 +176,108 @@ async def upload_document(
     return RedirectResponse(url=f"/documents/{result.document.id}?flash={kind}", status_code=303)
 
 
-# ── Сторінка документа ────────────────────────────────────────────────────────
+# ── Сторінка документа (редактор, фаза F1) ────────────────────────────────────
+
+def _filter_blocks(
+    blocks: list[Block],
+    query: str = "",
+    only_edited: bool = False,
+    emotion: str = "",
+) -> list[Block]:
+    """Серверні фільтри списку блоків.
+
+    Фільтруємо на сервері, а не в DOM: у книзі тисячі блоків, і тримати їх
+    усі в браузері лише щоб ховати — марнотратно (docs/FRONTEND.md, розд. 6.7).
+    """
+    from app.services.library.blocks import block_effective_text
+
+    filtered = blocks
+    if only_edited:
+        filtered = [b for b in filtered if b.text_edited]
+    if emotion:
+        filtered = [b for b in filtered if b.emotion == emotion]
+    if query:
+        needle = query.strip().casefold()
+        filtered = [
+            b for b in filtered if needle in block_effective_text(b).casefold()
+        ]
+    return filtered
+
+
+def _editor_context(
+    request: Request,
+    session: Session,
+    doc_id: int,
+    mode: str,
+    offset: int,
+    flash: tuple[str, str] | None,
+    query: str = "",
+    only_edited: bool = False,
+    emotion: str = "",
+    engine_id: str | None = None,
+    voice_id: str | None = None,
+    preset_id: int | None = None,
+    compact: bool = False,
+) -> dict:
+    """Контекст сторінки редактора (спільний для сторінки й фрагмента)."""
+    result = library.get_document_with_blocks(session, doc_id)
+    all_blocks = result.blocks
+
+    # Пресет може підставити рушій і голос — але емоцію до блоків
+    # застосовуємо лише на явну дію користувача (кнопка в панелі).
+    selected_preset = None
+    if preset_id is not None:
+        with contextlib.suppress(presets_service.PresetNotFoundError):
+            selected_preset = presets_service.get_preset(session, preset_id)
+    if selected_preset:
+        engine_id = selected_preset.engine_id or engine_id
+        voice_id = selected_preset.voice_id or voice_id
+
+    filtered = _filter_blocks(all_blocks, query, only_edited, emotion)
+    offset = max(0, offset)
+    page_blocks = filtered[offset : offset + BLOCKS_PER_PAGE]
+
+    engine = engines_service.pick_engine(engine_id or request.query_params.get("engine"))
+    engine_caps = engine["capabilities"]
+    voices = engines_service.voices_of(engine["id"])
+    selected_voice = (
+        voice_id
+        or request.query_params.get("voice")
+        or engines_service.default_voice_id()
+    )
+    if voices and selected_voice not in {v["id"] for v in voices}:
+        selected_voice = voices[0]["id"]
+
+    return {
+        "active_nav": "workspace",
+        "health": health_snapshot(),
+        "document": result.document,
+        "views": presentation.build_block_views(page_blocks, mode=mode),
+        "stats": presentation.document_stats(all_blocks),
+        "filtered_total": len(filtered),
+        "mode": mode,
+        "offset": offset,
+        "total": len(all_blocks),
+        "has_more": offset + BLOCKS_PER_PAGE < len(filtered),
+        "next_offset": offset + BLOCKS_PER_PAGE,
+        "page_size": BLOCKS_PER_PAGE,
+        "engine": engine,
+        "engine_caps": engine_caps,
+        "voices": voices,
+        "selected_voice": selected_voice,
+        "profiles": all_profiles_dict(),
+        "emotion_order": EMOTION_ORDER,
+        "emotion_labels": presentation.EMOTION_LABELS,
+        "emotion_icons": presentation.EMOTION_ICONS,
+        "query": query,
+        "only_edited": only_edited,
+        "emotion_filter": emotion,
+        "presets": presets_service.list_presets(session),
+        "selected_preset": selected_preset,
+        "compact": compact,
+        "flash": flash,
+    }
+
 
 @router.get("/documents/{doc_id}", response_class=HTMLResponse)
 def document_page(
@@ -164,13 +287,20 @@ def document_page(
     mode: str = "effective",
     offset: int = 0,
     flash: str | None = None,
+    q: str = "",
+    only_edited: bool = False,
+    emotion: str = "",
+    preset: int | None = None,
+    compact: bool = False,
 ):
-    """Документ із блоками: перегляд у трьох режимах тексту.
-
-    Фаза F0 — лише перегляд. Правка блоків, емоції та прев'ю — F1.
-    """
+    """Редактор документа: правка блоків, емоції, прев'ю (фаза F1)."""
     try:
-        result = library.get_document_with_blocks(session, doc_id)
+        context = _editor_context(
+            request, session, doc_id,
+            mode=mode, offset=offset, flash=_flash(flash),
+            query=q, only_edited=only_edited, emotion=emotion,
+            preset_id=preset, compact=compact,
+        )
     except DocumentNotFoundError:
         return templates.TemplateResponse(
             request,
@@ -179,27 +309,121 @@ def document_page(
             status_code=404,
         )
 
-    offset = max(0, offset)
-    page_blocks = result.blocks[offset : offset + BLOCKS_PER_PAGE]
-    views = presentation.build_block_views(page_blocks, mode=mode)
+    return templates.TemplateResponse(request, "pages/document.html", context)
+
+
+@router.get("/ui/documents/{doc_id}/blocks", response_class=HTMLResponse)
+def blocks_fragment(
+    request: Request,
+    doc_id: int,
+    session: Session = Depends(get_session),
+    mode: str = "effective",
+    offset: int = 0,
+    q: str = "",
+    only_edited: bool = False,
+    emotion: str = "",
+    compact: bool = False,
+):
+    """Фрагмент: наступна сторінка блоків (htmx довантажує в кінець списку)."""
+    try:
+        context = _editor_context(
+            request, session, doc_id,
+            mode=mode, offset=offset, flash=None,
+            query=q, only_edited=only_edited, emotion=emotion,
+            compact=compact,
+        )
+    except DocumentNotFoundError:
+        return HTMLResponse("", status_code=404)
+
+    return templates.TemplateResponse(request, "partials/block_list.html", context)
+
+
+@router.post("/ui/blocks/{block_id}/preview", response_class=HTMLResponse)
+async def preview_block(
+    request: Request,
+    block_id: int,
+    session: Session = Depends(get_session),
+    voice_id: str = Form(""),
+    engine_id: str = Form(""),
+):
+    """Фрагмент: плеєр із прев'ю одного блоку.
+
+    Читаємо блок із БД (а не з форми): так прев'ю гарантовано відповідає тому,
+    що збережено. Кнопка в редакторі спершу зберігає незбережене, і лише потім
+    викликає цей маршрут (див. static/js/editor.js).
+    """
+    from app.services.library.blocks import block_effective_text
+    from app.services.preview import (
+        PreviewEngineUnsupportedError,
+        PreviewUnavailableError,
+        synthesize_preview_async,
+    )
+
+    block = session.get(Block, block_id)
+    if block is None:
+        return templates.TemplateResponse(
+            request, "partials/preview_player.html", {"error": "Блок не знайдено"}
+        )
+
+    settings = get_settings()
+
+    # Явно вказаний рушій не підміняємо: якщо він недоступний, користувач має
+    # побачити це прямо, а не мовчазний перехід на інший голос.
+    if engine_id:
+        try:
+            engine = engines_service.get_engine(engine_id)
+        except EngineNotFoundError:
+            return templates.TemplateResponse(
+                request,
+                "partials/preview_player.html",
+                {"error": f"Рушій {engine_id!r} не знайдено в каталозі."},
+            )
+    else:
+        engine = engines_service.pick_engine(None)
+
+    caps = engine["capabilities"]
+    text = block_effective_text(block)
+    voice = voice_id or engines_service.default_voice_id()
+
+    if not text.strip():
+        return templates.TemplateResponse(
+            request,
+            "partials/preview_player.html",
+            {"error": "Порожній блок — озвучувати нічого."},
+        )
+
+    try:
+        result = await synthesize_preview_async(
+            text=text,
+            voice_id=voice,
+            emotion=block.emotion,
+            intensity=block.intensity,
+            engine_id=engine["id"],
+        )
+    except PreviewEngineUnsupportedError as exc:
+        return templates.TemplateResponse(
+            request, "partials/preview_player.html", {"error": str(exc)}
+        )
+    except PreviewUnavailableError as exc:
+        return templates.TemplateResponse(
+            request,
+            "partials/preview_player.html",
+            {
+                "error": (
+                    f"TTS-шлюз не відповідає ({settings.tts_base_url}): {exc}. "
+                    "Перевірте, чи піднято Docker-контейнер."
+                )
+            },
+        )
 
     return templates.TemplateResponse(
         request,
-        "pages/document.html",
+        "partials/preview_player.html",
         {
-            "active_nav": "workspace",
-            "health": health_snapshot(),
-            "document": result.document,
-            "views": views,
-            "stats": presentation.document_stats(result.blocks),
-            "mode": mode,
-            "offset": offset,
-            "total": len(result.blocks),
-            "has_prev": offset > 0,
-            "has_next": offset + BLOCKS_PER_PAGE < len(result.blocks),
-            "prev_offset": max(0, offset - BLOCKS_PER_PAGE),
-            "next_offset": offset + BLOCKS_PER_PAGE,
-            "flash": _flash(flash),
+            "result": result,
+            "block_id": block_id,
+            "voice_id": voice,
+            "max_chars": caps["max_chars"],
         },
     )
 
@@ -229,8 +453,12 @@ def delete(doc_id: int, session: Session = Depends(get_session)):
 # ── Система ───────────────────────────────────────────────────────────────────
 
 @router.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request):
-    """Стан системи, довідка про емоції та стан фаз."""
+def settings_page(request: Request, probe: bool = False):
+    """Стан системи, довідка про емоції та стан фаз.
+
+    `?probe=1` запускає перевірку TTS-шлюзу — окремо, бо це мережевий запит
+    із таймаутом, який не має сповільнювати кожне відкриття сторінки.
+    """
     return templates.TemplateResponse(
         request,
         "pages/settings.html",
@@ -239,7 +467,388 @@ def settings_page(request: Request):
             "health": health_snapshot(),
             "profiles": all_profiles_dict(),
             "emotion_order": EMOTION_ORDER,
+            "tts_probe": probe_tts_gateway() if probe else None,
         },
+    )
+
+
+# ── Аудіо ─────────────────────────────────────────────────────────────────────
+
+@router.get("/ui/preview/{filename}")
+def preview_audio(filename: str) -> FileResponse:
+    """Віддати WAV прев'ю з data/renders/preview.
+
+    Окремий маршрут, а не статичне монтування всієї теки `renders`: у ній
+    лежать і сегменти, і готові книги, а вони не призначені для перегляду
+    каталогу. Імʼя файлу беремо лише як базове — жодних шляхів.
+    """
+    safe_name = Path(filename).name
+    path = get_settings().renders_dir / "preview" / safe_name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Прев'ю не знайдено")
+    return FileResponse(path=str(path), media_type="audio/wav")
+
+
+# ── Рушії та голоси (фаза F3) ─────────────────────────────────────────────────
+
+# Однакова фраза для всіх голосів: порівнювати голоси на різних текстах
+# неможливо. Місце правди — тут, а не в JS.
+REFERENCE_PHRASE = (
+    "Доброго дня. Це приклад голосу для порівняння. "
+    "Українська мова має мелодійну інтонацію, і це добре чути."
+)
+
+
+@router.get("/voices", response_class=HTMLResponse)
+def voices_page(request: Request, session: Session = Depends(get_session)):
+    """Рушії з capabilities, голоси з прослуховуванням і пресети."""
+    return templates.TemplateResponse(
+        request,
+        "pages/voices.html",
+        {
+            "active_nav": "voices",
+            "health": health_snapshot(),
+            "available": engines_service.available_engines(),
+            "unavailable": engines_service.unavailable_engines(),
+            "presets": presets_service.list_presets(session),
+        },
+    )
+
+
+@router.post("/ui/voices/preview", response_class=HTMLResponse)
+async def audition_voice(
+    request: Request,
+    voice_id: str = Form(...),
+    engine_id: str = Form(""),
+):
+    """Синтезувати еталонну фразу вибраним голосом — фрагмент із плеєром."""
+    from app.services.preview import (
+        PreviewEngineUnsupportedError,
+        PreviewUnavailableError,
+        synthesize_preview_async,
+    )
+
+    engine = engines_service.pick_engine(engine_id or None)
+    try:
+        result = await synthesize_preview_async(
+            text=REFERENCE_PHRASE,
+            voice_id=voice_id,
+            emotion="neutral",
+            intensity=1.0,
+            engine_id=engine["id"],
+        )
+    except (PreviewEngineUnsupportedError, PreviewUnavailableError) as exc:
+        return templates.TemplateResponse(
+            request,
+            "partials/voice_preview.html",
+            {
+                "error": (
+                    f"{exc}. Перевірте, чи піднято TTS-шлюз "
+                    f"({get_settings().tts_base_url})."
+                )
+            },
+        )
+
+    return templates.TemplateResponse(
+        request, "partials/voice_preview.html", {"result": result}
+    )
+
+
+# ── Пресети (фаза F3) ─────────────────────────────────────────────────────────
+
+@router.post("/ui/presets")
+def create_preset_ui(
+    request: Request,
+    session: Session = Depends(get_session),
+    name: str = Form(...),
+    engine: str = Form(""),
+    voice: str = Form(""),
+    emotion: str = Form("neutral"),
+    intensity: float = Form(0.5),
+    back: str = Form("/voices"),
+):
+    """Зберегти поточні рушій/голос/емоцію як пресет."""
+    try:
+        presets_service.create_preset(
+            session,
+            name=name,
+            engine_id=engine,
+            voice_id=voice,
+            emotion=emotion,
+            intensity=intensity,
+        )
+    except presets_service.PresetNameTakenError as exc:
+        logger.info("Пресет не створено: %s", exc)
+    return RedirectResponse(url=back, status_code=303)
+
+
+@router.post("/ui/presets/{preset_id}/delete")
+def delete_preset_ui(
+    preset_id: int,
+    session: Session = Depends(get_session),
+    back: str = Form("/voices"),
+):
+    """Видалити пресет."""
+    with contextlib.suppress(presets_service.PresetNotFoundError):
+        presets_service.delete_preset(session, preset_id)
+    return RedirectResponse(url=back, status_code=303)
+
+
+@router.post("/ui/documents/{doc_id}/presets/{preset_id}/apply")
+def apply_preset_ui(
+    doc_id: int,
+    preset_id: int,
+    session: Session = Depends(get_session),
+):
+    """Застосувати емоцію пресета до всіх озвучуваних блоків документа."""
+    with contextlib.suppress(presets_service.PresetNotFoundError):
+        presets_service.apply_to_blocks(session, doc_id, preset_id)
+    return RedirectResponse(
+        url=f"/documents/{doc_id}?flash=preset_applied", status_code=303
+    )
+
+
+# ── Черга та завдання (фаза F2) ───────────────────────────────────────────────
+
+def _job_view(job: Job, session: Session) -> dict:
+    """Дані завдання разом із назвою документа.
+
+    `JobRead` не містить назви документа (знахідка 16.8b), а в HTML-роутері
+    вона береться простим JOIN-ом — без N+1 запитів від клієнта.
+    """
+    document = session.get(Document, job.document_id)
+    chip = presentation.job_status_chip(job.status)
+
+    elapsed_ms = 0
+    if job.started_at:
+        finished = job.finished_at or utc_now()
+        elapsed_ms = int((finished - job.started_at).total_seconds() * 1000)
+
+    output = Path(job.output_path) if job.output_path else None
+    return {
+        "job": job,
+        "document": document,
+        "document_name": document.filename if document else f"документ {job.document_id}",
+        "chip": chip,
+        "percent": presentation.format_percent(job.progress or 0.0),
+        "elapsed_ms": elapsed_ms,
+        "output_name": output.name if output else "",
+        "output_format": output.suffix.lstrip(".").upper() if output else "",
+        "output_size": output.stat().st_size if output and output.is_file() else 0,
+        "is_active": job.status in (JobStatus.QUEUED, JobStatus.RUNNING),
+        "is_stalled": job.status == JobStatus.RUNNING and not job.started_at,
+    }
+
+
+def _speakable_count(session: Session, document_id: int) -> int:
+    from app.services.library.blocks import count_speakable
+
+    return count_speakable(library.list_document_blocks(session, document_id))
+
+
+@router.get("/jobs", response_class=HTMLResponse)
+def queue_page(
+    request: Request,
+    session: Session = Depends(get_session),
+    flash: str | None = None,
+):
+    """Черга завдань: що виконується, що в черзі, що готово."""
+    jobs = list(session.exec(select(Job).order_by(Job.created_at.desc())).all())
+    views = [_job_view(job, session) for job in jobs]
+    health = health_snapshot()
+
+    return templates.TemplateResponse(
+        request,
+        "pages/queue.html",
+        {
+            "active_nav": "queue",
+            "health": health,
+            "views": views,
+            "running": sum(1 for v in views if v["job"].status == JobStatus.RUNNING),
+            "queued": sum(1 for v in views if v["job"].status == JobStatus.QUEUED),
+            "concurrency": health["synth_concurrency"],
+            "flash": _flash(flash),
+        },
+    )
+
+
+@router.get("/jobs/{job_id}", response_class=HTMLResponse)
+def job_page(
+    request: Request,
+    job_id: int,
+    session: Session = Depends(get_session),
+    flash: str | None = None,
+):
+    """Одне завдання: прогрес, сегменти, скасування, завантаження."""
+    job = session.get(Job, job_id)
+    if not job:
+        return templates.TemplateResponse(
+            request,
+            "pages/not_found.html",
+            {
+                "active_nav": "queue",
+                "health": health_snapshot(),
+                "doc_id": job_id,
+                "what": "Завдання",
+            },
+            status_code=404,
+        )
+
+    segments = list(
+        session.exec(
+            select(Segment).where(Segment.job_id == job_id).order_by(Segment.ordinal)
+        ).all()
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "pages/job.html",
+        {
+            "active_nav": "queue",
+            "health": health_snapshot(),
+            "view": _job_view(job, session),
+            "segments": segments,
+            "block_total": _speakable_count(session, job.document_id),
+            "flash": _flash(flash),
+        },
+    )
+
+
+@router.post("/ui/documents/{doc_id}/jobs")
+def create_job_from_editor(
+    doc_id: int,
+    session: Session = Depends(get_session),
+    voice: str = Form(""),
+    engine: str = Form(""),
+):
+    """«Озвучити все»: створити завдання і перейти на його сторінку.
+
+    Поля форми звуться `voice` / `engine` — так само, як параметри сторінки
+    редактора, бо кнопка надсилає ту саму форму через `formaction`.
+    Перевірки (документ існує, є озвучувані блоки) — ті самі, що в JSON-API.
+    """
+    from app.services.library.blocks import count_speakable
+    from app.worker.queue import enqueue_job
+
+    try:
+        result = library.get_document_with_blocks(session, doc_id)
+    except DocumentNotFoundError:
+        return RedirectResponse(url="/?flash=deleted", status_code=303)
+
+    if count_speakable(result.blocks) == 0:
+        return RedirectResponse(
+            url=f"/documents/{doc_id}?flash=nothing_to_speak", status_code=303
+        )
+
+    # Друге завдання на той самий документ нічого не додає, лише дублює
+    # роботу: відкриваємо наявне (захист від подвійного кліку й F5).
+    active = session.exec(
+        select(Job)
+        .where(
+            Job.document_id == doc_id,
+            Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
+        )
+        .order_by(Job.created_at.desc())
+    ).first()
+    if active:
+        logger.info("Документ %s уже озвучується (завдання %s)", doc_id, active.id)
+        return RedirectResponse(
+            url=f"/jobs/{active.id}?flash=already_running", status_code=303
+        )
+
+    # Не створюємо завдання, яке гарантовано впаде: краще сказати причину
+    # зараз, ніж через три сегменти показати «failed» із 404 від шлюзу.
+    ready, reason = tts_ready_for_synthesis()
+    if not ready:
+        logger.warning("Синтез не запущено: %s", reason)
+        return RedirectResponse(
+            url=f"/documents/{doc_id}?flash=tts_not_ready", status_code=303
+        )
+
+    selected_engine = engines_service.pick_engine(engine or None)
+    known_voices = {item["id"] for item in engines_service.voices_of(selected_engine["id"])}
+    selected_voice = voice if voice in known_voices else engines_service.default_voice_id()
+    if known_voices and selected_voice not in known_voices:
+        # Голос міг зникнути з конфігурації шлюзу — беремо перший наявний
+        selected_voice = sorted(known_voices)[0]
+
+    job = Job(
+        document_id=doc_id,
+        engine_id=selected_engine["id"],
+        voice_id=selected_voice,
+        status=JobStatus.QUEUED,
+        options_json={"created_from": "ui", "pause_ms": 400},
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+
+    enqueue_job(job.id)
+    logger.info("Завдання %s створено з інтерфейсу (doc=%s)", job.id, doc_id)
+    return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
+
+
+@router.post("/ui/jobs/{job_id}/cancel")
+async def cancel_job_ui(job_id: int, session: Session = Depends(get_session)):
+    """Скасувати завдання зі сторінки черги."""
+    from app.worker.queue import cancel_job
+
+    if not session.get(Job, job_id):
+        return RedirectResponse(url="/jobs", status_code=303)
+
+    await cancel_job(job_id)
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/ui/jobs/{job_id}/retry")
+def retry_job_ui(job_id: int, session: Session = Depends(get_session)):
+    """Повторити невдале або скасоване завдання."""
+    from app.worker.queue import enqueue_job
+
+    job = session.get(Job, job_id)
+    if not job:
+        return RedirectResponse(url="/jobs", status_code=303)
+    if job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
+        return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+    job.status = JobStatus.QUEUED
+    job.error = ""
+    job.progress = 0.0
+    job.started_at = None
+    job.finished_at = None
+    session.add(job)
+    session.commit()
+    enqueue_job(job.id)
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@router.get("/ui/jobs/{job_id}/card", response_class=HTMLResponse)
+def job_card_fragment(request: Request, job_id: int, session: Session = Depends(get_session)):
+    """Картка завдання — фрагмент для htmx і для опитування, коли SSE мовчить."""
+    job = session.get(Job, job_id)
+    if not job:
+        return HTMLResponse("", status_code=404)
+    return templates.TemplateResponse(
+        request, "partials/job_card.html", {"view": _job_view(job, session)}
+    )
+
+
+@router.get("/ui/jobs/{job_id}/segments", response_class=HTMLResponse)
+def segments_fragment(request: Request, job_id: int, session: Session = Depends(get_session)):
+    """Таблиця сегментів — оновлюється під час синтезу."""
+    job = session.get(Job, job_id)
+    if not job:
+        return HTMLResponse("", status_code=404)
+
+    segments = list(
+        session.exec(
+            select(Segment).where(Segment.job_id == job_id).order_by(Segment.ordinal)
+        ).all()
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/segments_table.html",
+        {"job": job, "segments": segments, "view": _job_view(job, session)},
     )
 
 

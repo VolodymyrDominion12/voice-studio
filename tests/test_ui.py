@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import html as html_module
 import re
 from html.parser import HTMLParser
 
@@ -16,9 +17,9 @@ from sqlmodel import Session, delete
 
 from app.models import Block, Document, Job, Segment
 
-# Витяг текстів блоків із розмітки сторінки документа
-_TEXT_DIV = re.compile(r'<div class="txt[^"]*">(.*?)</div>', re.S)
-_TAGS = re.compile(r"<[^>]+>")
+# Витяг текстів блоків із розмітки сторінки документа.
+# У редакторі (F1) текст у <textarea class="txt-input">, тому шукаємо його.
+_TEXTAREA = re.compile(r'<textarea class="txt-input"[^>]*>(.*?)</textarea>', re.S)
 
 SAMPLE_MD = (
     "Розділ перший\n\n"
@@ -171,13 +172,23 @@ def test_unsupported_extension_returns_415(client) -> None:
     assert_html_well_formed(response.text)
 
 
-def test_unimplemented_extractor_returns_422_with_hint(client) -> None:
+def test_unsupported_but_allowlisted_extension_returns_422(client, monkeypatch) -> None:
+    """Формат у білому списку, але екстрактора немає — це 422 із підказкою.
+
+    `.pdf` тут більше не годиться: його витяг реалізовано (етап 2 зроблено).
+    """
+    from app.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "allowed_extensions", ".txt,.md,.doc", raising=False
+    )
     response = client.post(
         "/ui/documents",
-        files={"file": ("book.pdf", b"%PDF-1.4", "application/pdf")},
+        files={"file": ("old.doc", "привіт".encode(), "application/msword")},
     )
     assert response.status_code == 422
-    assert "етап 2" in response.text
+    assert "не реалізований" in response.text
+    assert ".doc" in response.text
 
 
 def test_oversized_upload_returns_413(client, monkeypatch) -> None:
@@ -191,21 +202,32 @@ def test_oversized_upload_returns_413(client, monkeypatch) -> None:
     assert response.status_code == 413
 
 
-# ── Сторінка документа ────────────────────────────────────────────────────────
+# ── Сторінка документа (редактор, F1) ─────────────────────────────────────────
 
 def blocks_section(html: str) -> str:
-    """Витягти лише секцію блоків — без навігації та підсвіченої вкладки."""
-    start = html.index('<div class="blocks">')
-    end = html.find('<nav class="pager">', start)
+    """Витягти лише секцію блоків — без панелі інструментів і гарячих клавіш.
+
+    Фрагменти (`/ui/documents/{id}/blocks`) повертають самі рядки без
+    обгортки, тож для них беремо весь HTML.
+    """
+    try:
+        start = html.index('<div class="blocks"')
+    except ValueError:
+        return html
+    end = html.find('class="card hotkeys-card"', start)
     if end == -1:
         end = html.find("<footer", start)
     return html[start:end]
 
 
 def block_texts(html: str) -> list[str]:
-    """Тексти блоків у порядку показу (без розмітки)."""
-    fragments = _TEXT_DIV.findall(blocks_section(html))
-    return [" ".join(_TAGS.sub("", fragment).split()) for fragment in fragments]
+    """Тексти блоків у порядку показу.
+
+    У редакторі (F1) текст живе в `<textarea class="txt-input">`, а не в
+    `<div class="txt">` як у режимі перегляду F0.
+    """
+    fragments = _TEXTAREA.findall(blocks_section(html))
+    return [" ".join(html_module.unescape(fragment).split()) for fragment in fragments]
 
 
 def test_text_modes_differ(client) -> None:
@@ -230,12 +252,16 @@ def test_text_modes_differ(client) -> None:
     assert effective_texts != raw_texts
 
 
-def test_normalizer_diff_only_in_effective_mode(client) -> None:
-    """Пояснення «що змінив нормалізатор» показуємо там, де воно доречне."""
-    path = upload(client).headers["location"].split("?")[0]
+def test_normalizer_diff_is_available_for_reference(client) -> None:
+    """Різницю «вихідний / нормалізований» видно завжди.
 
-    assert "Що змінив нормалізатор" in client.get(f"{path}?mode=effective").text
-    assert "Що змінив нормалізатор" not in client.get(f"{path}?mode=normalized").text
+    У F0 її показували лише в режимі «Мій». У редакторі (F1) вона потрібна
+    постійно: це довідка, з якою користувач звіряє власну правку.
+    """
+    path = upload(client).headers["location"].split("?")[0]
+    for mode in ("effective", "normalized", "raw"):
+        body = client.get(f"{path}?mode={mode}").text
+        assert "Різниця: вихідний / нормалізований" in body, f"немає різниці в режимі {mode}"
 
 
 def test_document_404_page(client) -> None:
@@ -251,15 +277,22 @@ def test_pagination(client, monkeypatch) -> None:
     monkeypatch.setattr(ui_router, "BLOCKS_PER_PAGE", 2)
     content = "\n\n".join(f"Абзац номер {i}." for i in range(5))
     path = upload(client, "багато.md", content).headers["location"].split("?")[0]
+    doc_id = path.rsplit("/", 1)[-1]
 
     first = client.get(path)
     assert first.status_code == 200
-    assert "блоки 1–2 з 5" in first.text
-    assert "Наступні" in first.text
+    assert len(block_texts(first.text)) == 2
+    assert "more-sentinel" in first.text           # є що довантажувати
 
-    second = client.get(f"{path}?offset=2")
-    assert "блоки 3–4 з 5" in second.text
-    assert "Попередні" in second.text
+    # Сентинел веде на фрагмент наступної сторінки
+    fragment = client.get(f"/ui/documents/{doc_id}/blocks?offset=2")
+    assert fragment.status_code == 200
+    assert len(block_texts(fragment.text)) == 2
+
+    last = client.get(f"/ui/documents/{doc_id}/blocks?offset=4")
+    assert len(block_texts(last.text)) == 1
+    assert "more-sentinel" not in last.text
+    assert "за поточним фільтром" in last.text
 
 
 def test_normalize_redirect(client) -> None:

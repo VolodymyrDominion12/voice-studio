@@ -1,0 +1,22 @@
+{#
+  Плеєр прослуховування голосу — фрагмент (POST /ui/voices/preview).
+  Однакова еталонна фраза для всіх голосів, щоб порівняння було чесним.
+#}
+{% if error %}
+  <div class="preview-error" role="alert">
+    <b>Прослухати не вдалося.</b> {{ error }}
+  </div>
+{% else %}
+  <div class="preview-ok">
+    <audio controls autoplay preload="auto" src="/ui/preview/{{ result.path.name }}"></audio>
+    <div class="tiny muted">
+      {{ result.voice_id }} · {{ result.effective_chars }} символів
+      {%- if result.cached %} · з кешу{% endif %}
+    </div>
+    {% if result.truncated %}
+      <div class="tiny warn-text">
+        ⚠ Еталонну фразу обрізано до {{ result.max_chars }} символів (ліміт рушія).
+      </div>
+    {% endif %}
+  </div>
+{% endif %}

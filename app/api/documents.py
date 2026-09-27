@@ -20,31 +20,15 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from app.api.errors import to_http_error
 from app.db import get_session
 from app.models import BlockRead, BlockUpdate, DocumentRead, DocumentWithBlocks
 from app.services.library import blocks as blocks_service
 from app.services.library import documents as library
 from app.services.library.documents import DocumentResult
-from app.services.library.errors import (
-    BlockNotFoundError,
-    DocumentNotFoundError,
-    ExtractorUnavailableError,
-    UnsupportedFormatError,
-    UploadTooLargeError,
-)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
-
-# Помилка сервісу → статус-код. Порядок не важливий: типи не перетинаються.
-_STATUS_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
-    (UnsupportedFormatError, 415),
-    (UploadTooLargeError, 413),
-    (ExtractorUnavailableError, 422),
-    (DocumentNotFoundError, 404),
-    (BlockNotFoundError, 404),
-)
-
 
 # ── Допоміжні функції ─────────────────────────────────────────────────────────
 
@@ -54,19 +38,6 @@ def _to_response(result: DocumentResult) -> DocumentWithBlocks:
         result.document,
         update={"blocks": [BlockRead.model_validate(b) for b in result.blocks]},
     )
-
-
-def _http_error(exc: Exception) -> HTTPException:
-    """Перекласти помилку сервісу в HTTPException.
-
-    Невідомі помилки не ковтаємо: вони мають стати 500 і потрапити в лог,
-    а не вдавати помилку користувача.
-    """
-    for error_type, status in _STATUS_BY_ERROR:
-        if isinstance(exc, error_type):
-            return HTTPException(status_code=status, detail=str(exc))
-    logger.exception("Непередбачена помилка сервісу бібліотеки")
-    raise exc
 
 
 # ── Схеми масової правки ──────────────────────────────────────────────────────
@@ -96,7 +67,7 @@ async def upload_document(
     try:
         result = library.create_from_upload(session, file.filename or "", file.file)
     except Exception as exc:
-        raise _http_error(exc) from exc
+        raise to_http_error(exc) from exc
     return _to_response(result)
 
 
@@ -112,7 +83,7 @@ def get_document(doc_id: int, session: Session = Depends(get_session)):
     try:
         result = library.get_document_with_blocks(session, doc_id)
     except Exception as exc:
-        raise _http_error(exc) from exc
+        raise to_http_error(exc) from exc
     return _to_response(result)
 
 
@@ -129,7 +100,7 @@ def update_block(
             session, doc_id, block_id, update.model_dump(exclude_unset=True)
         )
     except Exception as exc:
-        raise _http_error(exc) from exc
+        raise to_http_error(exc) from exc
     return BlockRead.model_validate(block)
 
 
@@ -154,7 +125,7 @@ def update_blocks(
     try:
         updated = blocks_service.update_blocks(session, doc_id, changes)
     except Exception as exc:
-        raise _http_error(exc) from exc
+        raise to_http_error(exc) from exc
     return [BlockRead.model_validate(b) for b in updated]
 
 
@@ -164,7 +135,7 @@ def renormalize_document(doc_id: int, session: Session = Depends(get_session)):
     try:
         result = library.renormalize(session, doc_id)
     except Exception as exc:
-        raise _http_error(exc) from exc
+        raise to_http_error(exc) from exc
     return _to_response(result)
 
 
@@ -174,4 +145,4 @@ def delete_document(doc_id: int, session: Session = Depends(get_session)):
     try:
         library.delete_document(session, doc_id)
     except Exception as exc:
-        raise _http_error(exc) from exc
+        raise to_http_error(exc) from exc

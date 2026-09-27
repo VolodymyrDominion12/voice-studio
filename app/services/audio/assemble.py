@@ -72,14 +72,25 @@ def assemble_segments(
     pause_ms_between: int = 400,
     target_sample_rate: int = 24000,
     target_lufs: float = -18.0,
+    pauses_ms: list[int] | None = None,
+    energies_db: list[float] | None = None,
 ) -> np.ndarray:
     """Склеїти WAV-сегменти з паузами і нормалізувати гучність.
 
     Args:
         segment_paths:       Впорядкований список WAV-файлів.
-        pause_ms_between:    Пауза між сегментами (мс). Передається із ProsodyPlan.
+        pause_ms_between:    Пауза за замовчуванням (мс), якщо немає по-сегментних.
         target_sample_rate:  Цільова частота дискретизації (Гц).
         target_lufs:         Цільова інтегральна гучність (EBU R128).
+        pauses_ms:           Пауза ПІСЛЯ кожного сегмента з ProsodyPlan. Це те,
+                             що робить «сумно» сумним: у профілю `sad` пауза
+                             900 мс проти 250 мс у `excited`. Без цього емоція
+                             впливала б лише на темп.
+        energies_db:         Корекція гучності кожного сегмента (дБ) за профілем
+                             емоції. Застосовується ДО глобальної нормалізації,
+                             тож відносна динаміка між сегментами зберігається —
+                             саме тому нормалізація тут глобальна, а не
+                             по-сегментна (ADR-004).
 
     Returns:
         Нормалізований float32-масив готового аудіо.
@@ -87,19 +98,41 @@ def assemble_segments(
     if not segment_paths:
         raise ValueError("Список сегментів порожній")
 
+    if pauses_ms is not None and len(pauses_ms) != len(segment_paths):
+        raise ValueError(
+            f"pauses_ms має містити стільки ж значень, скільки сегментів "
+            f"({len(pauses_ms)} проти {len(segment_paths)})"
+        )
+    if energies_db is not None and len(energies_db) != len(segment_paths):
+        raise ValueError(
+            f"energies_db має містити стільки ж значень, скільки сегментів "
+            f"({len(energies_db)} проти {len(segment_paths)})"
+        )
+
     parts: list[np.ndarray] = []
-    pause_samples = _ms_to_samples(pause_ms_between, target_sample_rate)
-    silence = _silence(pause_samples)
+    default_pause_samples = _ms_to_samples(pause_ms_between, target_sample_rate)
 
     for i, path in enumerate(segment_paths):
         if not path.exists():
             logger.warning("Сегмент не знайдено, пропускаємо: %s", path)
             continue
+
         audio, sr = load_wav(path)
         audio = _resample_if_needed(audio, sr, target_sample_rate)
+
+        if energies_db is not None and energies_db[i]:
+            gain = 10 ** (energies_db[i] / 20)
+            audio = (audio * gain).astype(np.float32)
+
         parts.append(audio)
+
         if i < len(segment_paths) - 1:
-            parts.append(silence)
+            pause = (
+                _ms_to_samples(pauses_ms[i], target_sample_rate)
+                if pauses_ms is not None
+                else default_pause_samples
+            )
+            parts.append(_silence(max(0, pause)))
 
     if not parts:
         raise ValueError("Жоден сегмент не завантажено")
@@ -176,8 +209,13 @@ def build_audio(
     target_sample_rate: int = 24000,
     target_lufs: float = -18.0,
     formats: tuple[str, ...] = ("mp3",),
+    pauses_ms: list[int] | None = None,
+    energies_db: list[float] | None = None,
 ) -> dict[str, Path]:
     """Повний цикл збірки: сегменти → нормалізований WAV → MP3.
+
+    `pauses_ms` і `energies_db` — по-сегментні значення з ProsodyPlan; якщо не
+    передані, використовується однакова пауза `pause_ms` (поведінка до F4).
 
     Returns:
         dict: {"mp3": Path, "wav": Path} — ті формати, що запитані.
@@ -187,6 +225,8 @@ def build_audio(
         pause_ms_between=pause_ms,
         target_sample_rate=target_sample_rate,
         target_lufs=target_lufs,
+        pauses_ms=pauses_ms,
+        energies_db=energies_db,
     )
     results: dict[str, Path] = {}
 

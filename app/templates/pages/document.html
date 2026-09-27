@@ -1,7 +1,14 @@
 {% extends "layout/base.html" %}
-{% block title %}{{ document.filename }} — Voice Studio{% endblock %}
+{% block title %}{{ document.filename }} — редактор — Voice Studio{% endblock %}
 
 {% block content %}
+{#
+  Редактор документа (фаза F1).
+  Локальний стан (Alpine): вибір блоків і панель масових дій.
+  Автозбереження, просодія, прев'ю, гарячі клавіші — static/js/editor.js.
+#}
+<div x-data="editorState()" data-doc-id="{{ document.id }}" class="editor">
+
   <section class="card doc-head">
     <div class="hd">
       <a class="btn sm ghost" href="/">← Документи</a>
@@ -23,6 +30,7 @@
         <button class="btn sm ghost" type="submit">Видалити</button>
       </form>
     </div>
+
     <div class="bd">
       <div class="stats">
         <span><b>{{ stats.blocks }}</b> блоків</span>
@@ -31,59 +39,221 @@
           <span><b>{{ stats.edited }}</b> відредаговано вручну</span>
         {% endif %}
         <span title="Оцінка за символами, а не вимір">аудіо {{ stats.estimate }}</span>
+        {% if filtered_total != total %}
+          <span class="chip line tiny">фільтр: {{ filtered_total }} із {{ total }}</span>
+        {% endif %}
       </div>
-
-      <div class="tabs" role="tablist" aria-label="Режим тексту">
-        <a class="tab {% if mode == 'raw' %}on{% endif %}" href="?mode=raw">Вихідний</a>
-        <a class="tab {% if mode == 'normalized' %}on{% endif %}" href="?mode=normalized">Нормалізований</a>
-        <a class="tab {% if mode == 'effective' %}on{% endif %}" href="?mode=effective">Мій</a>
-      </div>
-      <p class="tiny muted" style="margin: 8px 0 0">
-        «Мій» — те, що реально піде в синтез: ваш текст, якщо він є, інакше
-        нормалізований, інакше вихідний.
-      </p>
     </div>
   </section>
 
-  <section class="card notice-card">
-    <div class="bd">
-      <b>Це перегляд (фаза F0).</b>
-      <span class="tiny muted">
-        Правка тексту, вибір емоції та прослуховування блоку зʼявляться у фазі F1;
-        запуск озвучення всього документа — у F2. Просодія нижче порахована
-        наперед — вона показує, що саме станеться при синтезі.
+  {# ── Панель інструментів ─────────────────────────────────────────────── #}
+  <section class="toolbar">
+    <form class="toolbar-row" method="get" action="/documents/{{ document.id }}">
+      <input type="hidden" name="mode" value="{{ mode }}">
+
+      <label class="tiny">рушій
+        <select name="engine" data-engine-select>
+          {% for item in [engine] %}
+            <option value="{{ item.id }}" selected>{{ item.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label class="tiny">голос
+        <select name="voice" data-voice-select>
+          {% for voice in voices %}
+            <option value="{{ voice.id }}" {% if voice.id == selected_voice %}selected{% endif %}>
+              {{ voice.id }}{% if voice.gender %} · {{ voice.gender }}{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <span class="chip line tiny" title="Ліміт символів в одному запиті до рушія">
+        макс. {{ engine_caps.max_chars }} симв.
       </span>
-    </div>
+
+      {% if not engine_caps.emotions %}
+        <span class="chip line tiny"
+              title="ADR-004: рушій не вміє емоцій, тож вираз бере на себе шар просодії">
+          емоції — через просодію
+        </span>
+      {% endif %}
+
+      <span class="sp"></span>
+
+      {# formaction: та сама форма, але POST на створення завдання.
+         Окрема форма тут неможлива — HTML не дозволяє вкладені форми. #}
+      <button class="btn primary" type="submit" data-synth-all
+              formaction="/ui/documents/{{ document.id }}/jobs" formmethod="post"
+              title="Створити завдання синтезу всього документа">
+        Озвучити все →
+      </button>
+    </form>
+
+    <form class="toolbar-row" method="get" action="/documents/{{ document.id }}">
+      <input type="hidden" name="mode" value="{{ mode }}">
+      <div class="modes">
+        <a class="tab {% if mode == 'raw' %}on{% endif %}"
+           href="?mode=raw&q={{ query | urlencode }}">Вихідний</a>
+        <a class="tab {% if mode == 'normalized' %}on{% endif %}"
+           href="?mode=normalized&q={{ query | urlencode }}">Нормалізований</a>
+        <a class="tab {% if mode == 'effective' %}on{% endif %}"
+           href="?mode=effective&q={{ query | urlencode }}">Мій</a>
+      </div>
+
+      <input type="search" name="q" value="{{ query }}" placeholder="пошук у тексті…"
+             aria-label="пошук у тексті">
+
+      <label class="tiny checkbox">
+        <input type="checkbox" name="only_edited" value="true" {% if only_edited %}checked{% endif %}>
+        лише змінені
+      </label>
+
+      <label class="tiny">емоція
+        <select name="emotion">
+          <option value="">будь-яка</option>
+          {% for name in emotion_order %}
+            <option value="{{ name }}" {% if emotion_filter == name %}selected{% endif %}>
+              {{ emotion_labels.get(name, name) }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <button class="btn sm" type="submit">Застосувати</button>
+      {% if query or only_edited or emotion_filter %}
+        <a class="btn sm ghost" href="?mode={{ mode }}">Скинути</a>
+      {% endif %}
+
+      {# Компактний режим: той самий список, але без різниці й зайвих відступів —
+         щоб гортати книгу на 1000+ блоків. #}
+      {% if compact %}
+        <a class="btn sm ghost" href="?mode={{ mode }}&q={{ query | urlencode }}"
+           title="Показувати різницю тексту">⇕ Звичайний вигляд</a>
+      {% else %}
+        <a class="btn sm ghost" href="?mode={{ mode }}&q={{ query | urlencode }}&compact=true"
+           title="Щільніший список без різниці">⇕ Компактно</a>
+      {% endif %}
+    </form>
+
+    {# ── Пресети: рушій + голос + емоція одним вибором ────────────────── #}
+    <form class="toolbar-row" method="get" action="/documents/{{ document.id }}">
+      <input type="hidden" name="mode" value="{{ mode }}">
+
+      <label class="tiny">пресет
+        <select name="preset" onchange="this.form.submit()">
+          <option value="">— не вибрано —</option>
+          {% for preset in presets %}
+            <option value="{{ preset.id }}"
+                    {% if selected_preset and selected_preset.id == preset.id %}selected{% endif %}>
+              {{ preset.name }} · {{ preset.voice_id or 'голос за замовч.' }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      {% if selected_preset %}
+        <span class="chip line tiny">
+          {{ emotion_icon(selected_preset.emotion) }}
+          {{ emotion_label(selected_preset.emotion) }} · {{ '%.1f' % selected_preset.intensity }}
+        </span>
+        <button class="btn sm" type="submit"
+                formaction="/ui/documents/{{ document.id }}/presets/{{ selected_preset.id }}/apply"
+                formmethod="post"
+                title="Поставити цю емоцію всім озвучуваним блокам">
+          Застосувати емоцію до всіх блоків
+        </button>
+      {% endif %}
+
+      <span class="sp"></span>
+
+      {# Пресет із редактора зберігає рушій і голос; емоцію бере з уже
+         вибраного пресета, бо глобального селектора емоції тут немає
+         (емоція ставиться кожному блоку окремо — це і є зміст F1). #}
+      <label class="tiny">зберегти як пресет
+        <input type="text" name="name" placeholder="назва" style="width: 150px" required>
+      </label>
+      <input type="hidden" name="emotion" value="{{ selected_preset.emotion if selected_preset else 'neutral' }}">
+      <input type="hidden" name="intensity" value="{{ selected_preset.intensity if selected_preset else 0.5 }}">
+      <input type="hidden" name="back" value="/documents/{{ document.id }}">
+      <button class="btn sm" type="submit" formmethod="post" formaction="/ui/presets"
+              title="Зберегти поточні рушій і голос під назвою">
+        Зберегти
+      </button>
+      <a class="btn sm ghost" href="/voices">Усі пресети →</a>
+    </form>
   </section>
 
-  {% if views %}
-    <div class="blocks">
-      {% for view in views %}
-        {% include "partials/block_row.html" %}
-      {% endfor %}
-    </div>
-  {% else %}
+  {# ── Панель масових дій (зʼявляється при виборі) ─────────────────────── #}
+  <div class="bulkbar" x-show="selected.length > 0" x-cloak>
+    <b>Виділено <span x-text="selected.length"></span></b>
+    <label class="tiny">емоція
+      <select x-model="bulkEmotion">
+        {% for name in emotion_order %}
+          <option value="{{ name }}">{{ emotion_icons.get(name, '') }} {{ emotion_labels.get(name, name) }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="btn sm" type="button" @click="applyBulkEmotion()">Застосувати</button>
+    <button class="btn sm ghost" type="button" @click="setBulkSpeak(false)">Не озвучувати</button>
+    <button class="btn sm ghost" type="button" @click="setBulkSpeak(true)">Озвучувати</button>
+    <span class="sp"></span>
+    <button class="btn sm ghost" type="button" @click="clearSelection()">Зняти виділення</button>
+  </div>
+
+  {# ── Список блоків ───────────────────────────────────────────────────── #}
+  <div class="blocks{% if compact %} compact{% endif %}" data-blocks>
+    {% include "partials/block_list.html" %}
+  </div>
+
+  {% if not views %}
     <section class="card">
       <div class="bd empty">
-        <b>У цьому документі немає блоків.</b>
-        <p class="muted tiny" style="margin: 6px 0 0">
-          Файл порожній або текст не вдалося витягти.
-        </p>
+        {% if query or only_edited or emotion_filter %}
+          <b>За цим фільтром нічого немає.</b>
+          <p class="muted tiny" style="margin: 6px 0 12px">
+            Спробуйте змінити умову або скинути фільтр.
+          </p>
+          <a class="btn" href="?mode={{ mode }}">Скинути фільтр</a>
+        {% else %}
+          <b>У цьому документі немає блоків.</b>
+          <p class="muted tiny" style="margin: 6px 0 0">Файл порожній або текст не вдалося витягти.</p>
+        {% endif %}
       </div>
     </section>
   {% endif %}
 
-  {% if has_prev or has_next %}
-    <nav class="pager">
-      {% if has_prev %}
-        <a class="btn sm" href="?mode={{ mode }}&offset={{ prev_offset }}">← Попередні</a>
-      {% endif %}
-      <span class="tiny muted">
-        блоки {{ offset + 1 }}–{{ offset + views | length }} з {{ total }}
-      </span>
-      {% if has_next %}
-        <a class="btn sm" href="?mode={{ mode }}&offset={{ next_offset }}">Наступні →</a>
-      {% endif %}
-    </nav>
-  {% endif %}
+  <section class="card hotkeys-card">
+    <div class="bd">
+      <b class="tiny">Гарячі клавіші</b>
+      <div class="legend tiny">
+        <span><span class="kbd">J</span>/<span class="kbd">K</span> навігація</span>
+        <span><span class="kbd">Space</span> прослухати блок</span>
+        <span><span class="kbd">E</span> емоція</span>
+        <span><span class="kbd">S</span> озвучувати/ні</span>
+        <span><span class="kbd">Ctrl</span>+<span class="kbd">S</span> зберегти все</span>
+        <span><span class="kbd">Esc</span> зняти виділення</span>
+      </div>
+    </div>
+  </section>
+</div>
+
+{# Профілі емоцій для перерахунку просодії в браузері — та сама таблиця,
+   що в app/services/expression/profiles.py, щоб UI не вигадував своїх чисел. #}
+<script type="application/json" id="vs-profiles">{{ profiles | tojson }}</script>
+<script type="application/json" id="vs-emotions">{{ emotion_order | tojson }}</script>
+<script type="application/json" id="vs-config">{{ {
+  "docId": document.id,
+  "voiceId": selected_voice,
+  "engineId": engine.id,
+  "maxChars": engine_caps.max_chars,
+  "autosaveMs": 1500,
+} | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/vendor/alpine.min.js" defer></script>
+  <script src="/static/js/editor.js" defer></script>
 {% endblock %}

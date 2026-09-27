@@ -1,31 +1,34 @@
 {#
-  Стрічка останніх завдань синтезу. Фаза F0 показує лише стан: створення
-  завдання, SSE-прогрес і скасування — фаза F2 (docs/FRONTEND.md, розділ 17).
+  Стрічка останніх завдань на робочій столі (фрагмент).
+  Прогрес активних оновлює static/js/jobs.js, якщо він підключений на сторінці.
 #}
 {% if jobs %}
   {% for job in jobs %}
     {% set chip = job_status_chip(job.status) %}
-    <div class="jobrow">
-      <span class="jobrow-id mono">#{{ job.id }}</span>
-      <span class="chip {{ chip[1] }}">{{ chip[0] }}</span>
+    <div class="jobrow" data-job-card="{{ job.id }}"
+         data-job-status="{{ job.status }}" data-job-progress="{{ job.progress or 0 }}">
+      <a class="jobrow-id mono" href="/jobs/{{ job.id }}">#{{ job.id }}</a>
+      <span class="chip {{ chip[1] }}" data-job-chip>{{ chip[0] }}</span>
       <span class="tiny muted">
         документ {{ job.document_id }} · {{ job.engine_id }}
         {% if job.voice_id %}· {{ job.voice_id }}{% endif %}
       </span>
       {% if job.status == 'running' or job.status == 'queued' %}
-        <span class="bar"><i style="width: {{ (job.progress * 100) | round(1) }}%"></i></span>
-        <span class="tiny mono">{{ job.progress | percent }}</span>
+        <span class="bar"><i data-job-bar style="width: {{ (job.progress * 100) | round(1) }}%"></i></span>
+        <span class="tiny mono" data-job-percent>{{ job.progress | percent }}</span>
       {% endif %}
       {% if job.error %}
         <span class="tiny err-text">{{ job.error }}</span>
       {% endif %}
-      {% if job.output_path %}
-        <span class="tiny mono muted">{{ job.output_path.split('/')[-1] }}</span>
-      {% endif %}
+      <span class="sp"></span>
+      <a class="btn sm ghost" href="/jobs/{{ job.id }}">Деталі</a>
     </div>
   {% endfor %}
+  <div class="row" style="margin-top: 9px">
+    <a class="btn sm" href="/jobs">Уся черга →</a>
+  </div>
 {% else %}
   <p class="muted tiny" style="margin: 0">
-    Завдань ще не було. Запуск синтезу зʼявиться у фазі F2.
+    Завдань ще не було. Відкрийте документ і натисніть «Озвучити все».
   </p>
 {% endif %}

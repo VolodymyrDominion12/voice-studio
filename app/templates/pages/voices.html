@@ -1,0 +1,148 @@
+{% extends "layout/base.html" %}
+{% block title %}Рушії та голоси — Voice Studio{% endblock %}
+
+{% block content %}
+{# Сторінка рушіїв і голосів (фаза F3). UI тут — документація, яка не бреше:
+   показує capabilities і чесно каже, чому рушій недоступний. #}
+<section class="card">
+  <div class="hd">
+    <h2>Рушії та голоси</h2>
+    <span class="sp"></span>
+    <span class="tiny muted">дані з <span class="mono">app/services/engines.py</span></span>
+  </div>
+  <div class="bd">
+    <p class="tiny muted" style="margin: 0">
+      Рушій визначає, що вміє модель нативно, а що бере на себе шар просодії
+      (ADR-004): темп, паузи й гучність сегмента працюють з будь-яким рушієм.
+    </p>
+  </div>
+</section>
+
+{% for engine in available %}
+  <section class="card engine-card">
+    <div class="hd">
+      <h2>● {{ engine.label }}</h2>
+      <span class="chip ok">підключено</span>
+      <span class="chip line tiny mono">{{ engine.id }}</span>
+    </div>
+    <div class="bd">
+      <div class="row wrap" style="gap: 6px">
+        <span class="chip line tiny">емоції нативно: {{ 'так' if engine.capabilities.emotions else 'ні' }}</span>
+        <span class="chip line tiny">теги емоцій: {{ 'так' if engine.capabilities.emotion_tags else 'ні' }}</span>
+        <span class="chip line tiny">клонування: {{ 'так' if engine.capabilities.voice_cloning else 'ні' }}</span>
+        <span class="chip line tiny">темп: {{ 'так' if engine.capabilities.speed else 'ні' }}</span>
+        <span class="chip line tiny">стрімінг: {{ 'так' if engine.capabilities.streaming else 'ні' }}</span>
+        <span class="chip line tiny">макс. {{ engine.capabilities.max_chars }} симв.</span>
+        <span class="chip line tiny">{{ engine.capabilities.sample_rate }} Гц</span>
+      </div>
+
+      {% if not engine.capabilities.emotions %}
+        <p class="tiny muted" style="margin: 10px 0 0">
+          Рушій не вміє емоцій — вираз бере на себе шар просодії: темп, паузи
+          та гучність сегмента. Це керована просодія, а не акторська гра моделі.
+        </p>
+      {% endif %}
+
+      {% if engine.voices %}
+        <div class="sep"></div>
+        <table>
+          <thead>
+            <tr><th>Голос</th><th>Мова</th><th>Стать</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for voice in engine.voices %}
+              <tr>
+                <td class="mono">{{ voice.id }}</td>
+                <td>{{ voice.lang or '—' }}</td>
+                <td>{{ {'f': 'жіночий', 'm': 'чоловічий', 'multi': 'багатоголосий'}.get(voice.gender, voice.gender or '—') }}</td>
+                <td class="right">
+                  <button class="btn sm" type="button"
+                          data-voice-audition="{{ voice.id }}" data-engine="{{ engine.id }}">
+                    ▶ Послухати
+                  </button>
+                </td>
+              </tr>
+              <tr class="audition-row" data-audition-for="{{ voice.id }}" hidden>
+                <td colspan="4"><div class="preview-slot" data-audition-slot></div></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="tiny muted" style="margin: 10px 0 0">
+          Прослуховування синтезує <b>ту саму еталонну фразу</b> для всіх голосів —
+          інакше порівняння було б нечесним. Перший синтез довший: шлюз завантажує модель.
+        </p>
+      {% else %}
+        <p class="tiny muted" style="margin: 12px 0 0">Голоси цього рушія ще не оголошені.</p>
+      {% endif %}
+    </div>
+  </section>
+{% endfor %}
+
+<h3 class="sec-title">У каталозі, але не підключені</h3>
+{% for engine in unavailable %}
+  <section class="card engine-card muted-engine">
+    <div class="hd">
+      <h2>○ {{ engine.label }}</h2>
+      <span class="chip">адаптера немає</span>
+      <span class="chip line tiny mono">{{ engine.id }}</span>
+      <span class="sp"></span>
+      <span class="chip line tiny">макс. {{ engine.capabilities.max_chars }} симв.</span>
+    </div>
+    <div class="bd">
+      {% if engine.note %}
+        <p class="tiny" style="margin: 0">{{ engine.note }}</p>
+      {% endif %}
+      {% if engine.voices %}
+        <p class="tiny muted" style="margin: 8px 0 0">
+          Голоси: <span class="mono">{{ engine.voices | map(attribute='id') | join(', ') }}</span>
+        </p>
+      {% endif %}
+    </div>
+  </section>
+{% endfor %}
+
+<h3 class="sec-title">Пресети</h3>
+<section class="card">
+  <div class="hd">
+    <h2>Збережені набори</h2>
+    <span class="sp"></span>
+    <span class="tiny muted">рушій + голос + емоція</span>
+  </div>
+  <div class="bd">
+    {% if presets %}
+      <table>
+        <thead><tr><th>Назва</th><th>Рушій</th><th>Голос</th><th>Емоція</th><th></th></tr></thead>
+        <tbody>
+          {% for preset in presets %}
+            <tr>
+              <td><b>{{ preset.name }}</b></td>
+              <td class="mono tiny">{{ preset.engine_id or '—' }}</td>
+              <td class="mono tiny">{{ preset.voice_id or '—' }}</td>
+              <td>
+                {{ emotion_icon(preset.emotion) }} {{ emotion_label(preset.emotion) }}
+                <span class="tiny muted">· {{ '%.1f' % preset.intensity }}</span>
+              </td>
+              <td class="right">
+                <form method="post" action="/ui/presets/{{ preset.id }}/delete" class="inline"
+                      onsubmit="return confirm('Видалити пресет «{{ preset.name }}»?');">
+                  <button class="btn sm ghost" type="submit">Видалити</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="tiny muted" style="margin: 0">
+        Пресетів ще немає. Їх можна створити на сторінці документа: оберіть
+        рушій і голос, потім «Зберегти як пресет».
+      </p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/js/voices.js" defer></script>
+{% endblock %}

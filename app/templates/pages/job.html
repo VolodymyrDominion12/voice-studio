@@ -1,0 +1,116 @@
+{% extends "layout/base.html" %}
+{% block title %}Завдання #{{ view.job.id }} — Voice Studio{% endblock %}
+
+{% block content %}
+{# Сторінка завдання (фаза F2). Прогрес і сегменти оновлює static/js/jobs.js. #}
+{% set job = view.job %}
+<section class="card doc-head"
+         data-job-page="{{ job.id }}"
+         data-job-status="{{ job.status }}"
+         data-job-progress="{{ job.progress or 0 }}">
+  <div class="hd">
+    <a class="btn sm ghost" href="/jobs">← Черга</a>
+    <h2>#{{ job.id }} · {{ view.document_name }}</h2>
+    <span class="chip {{ view.chip[1] }}" data-job-chip>{{ view.chip[0] }}</span>
+    <span class="chip line tiny">{{ job.engine_id }}{% if job.voice_id %} · {{ job.voice_id }}{% endif %}</span>
+    <span class="sp"></span>
+    {% if job.status == 'running' or job.status == 'queued' %}
+      <form method="post" action="/ui/jobs/{{ job.id }}/cancel" class="inline"
+            onsubmit="return confirm('Скасувати завдання? Готові сегменти лишаться на диску.');">
+        <button class="btn sm" type="submit">Скасувати</button>
+      </form>
+    {% endif %}
+    {% if job.status == 'done' %}
+      <a class="btn sm primary" href="/api/v1/jobs/{{ job.id }}/download">
+        ⬇ Завантажити {{ view.output_format or 'файл' }}
+      </a>
+    {% elif job.status in ('failed', 'cancelled') %}
+      <form method="post" action="/ui/jobs/{{ job.id }}/retry" class="inline">
+        <button class="btn sm primary" type="submit">Повторити</button>
+      </form>
+    {% endif %}
+  </div>
+
+  <div class="bd">
+    <div class="job-line">
+      <div class="bar {% if job.status == 'done' %}ok{% elif job.status == 'failed' %}err{% endif %}"
+           role="progressbar" aria-valuemin="0" aria-valuemax="100"
+           aria-valuenow="{{ (job.progress * 100) | round(0) | int }}"
+           aria-label="прогрес синтезу">
+        <i data-job-bar style="width: {{ (job.progress * 100) | round(1) }}%"></i>
+      </div>
+      <b data-job-percent>{{ view.percent }}</b>
+      <span class="tiny muted" data-job-detail>{% include "partials/job_detail_text.html" %}</span>
+    </div>
+
+    <div class="stats" style="margin-top: 12px">
+      <span>блоків до синтезу: <b>{{ block_total }}</b></span>
+      <span>сегментів створено: <b data-segment-count>{{ segments | length }}</b></span>
+      {% if view.output_size %}
+        <span>розмір: <b>{{ view.output_size | bytesize }}</b></span>
+      {% endif %}
+    </div>
+
+    {% if job.error %}
+      <div class="alert err" style="margin-top: 12px">
+        <b>Завдання впало:</b> {{ job.error }}
+        <div class="tiny">
+          Найчастіша причина — недоступний TTS-шлюз. Перевірте, чи піднято
+          Docker-контейнер, і натисніть «Повторити»: готові сегменти не
+          синтезуватимуться вдруге.
+        </div>
+      </div>
+    {% endif %}
+
+    {% if job.status == 'cancelled' %}
+      <div class="alert warn" style="margin-top: 12px">
+        Завдання скасовано. Уже синтезовані сегменти лишились на диску —
+        «Повторити» догонить решту, не переробляючи їх.
+      </div>
+    {% endif %}
+
+    {% if job.status == 'running' %}
+      <p class="tiny muted" style="margin: 12px 0 0">
+        Сторінку можна закрити: синтез іде у фоновому воркері. Якщо процес
+        перезапуститься, завдання повернеться в чергу автоматично.
+      </p>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card" style="margin-top: 14px">
+  <div class="hd">
+    <h2>Сегменти</h2>
+    <span class="sp"></span>
+    <span class="tiny muted">готові можна слухати одразу — не чекаючи кінця</span>
+  </div>
+  <div class="bd tight" data-segments-host
+       hx-get="/ui/jobs/{{ job.id }}/segments"
+       hx-trigger="every 5s"
+       hx-swap="innerHTML">
+    {% include "partials/segments_table.html" %}
+  </div>
+</section>
+
+<section class="card" style="margin-top: 14px">
+  <div class="bd">
+    <b class="tiny">Параметри збірки</b>
+    <dl class="kv" style="margin-top: 8px">
+      <dt>Пауза між блоками</dt><dd>{{ job.options_json.get('pause_ms', 400) }} мс</dd>
+      <dt>Цільова гучність</dt><dd>{{ health.target_lufs }} LUFS</dd>
+      <dt>Частота дискретизації</dt><dd>{{ health.target_sample_rate }} Гц</dd>
+      <dt>Формат результату</dt><dd>{{ view.output_format or '—' }}</dd>
+      <dt>Рушій / голос</dt><dd>{{ job.engine_id }} / {{ job.voice_id }}</dd>
+    </dl>
+    <p class="tiny muted" style="margin: 10px 0 0">
+      Формат не вибирається: конвертації між форматами немає, тож завантаження
+      віддає саме той файл, який створила збірка (docs/FRONTEND.md, знахідка 16.3).
+    </p>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/js/jobs.js" defer></script>
+{% endblock %}

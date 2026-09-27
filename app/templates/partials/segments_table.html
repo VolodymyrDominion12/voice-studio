@@ -1,0 +1,65 @@
+{#
+  Таблиця сегментів завдання — фрагмент (GET /ui/jobs/{id}/segments).
+  Готові сегменти можна слухати одразу, не чекаючи кінця завдання
+  (docs/FRONTEND.md, розділ 7.2).
+  Очікує: job, segments, view.
+#}
+{% if segments %}
+  <table class="segments">
+    <thead>
+      <tr>
+        <th>№</th><th>Блок</th><th>Текст</th><th>Профіль</th>
+        <th>Тривалість</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for segment in segments %}
+        <tr data-segment="{{ segment.ordinal }}">
+          <td class="mono">{{ segment.ordinal }}</td>
+          <td class="mono">{{ segment.block_id }}</td>
+          <td class="seg-text">{{ segment.text }}</td>
+          <td class="mono tiny">
+            {%- if segment.prosody_json -%}
+              {{ segment.prosody_json.get('speed', 1.0) }}× ·
+              {{ segment.prosody_json.get('pause_after_ms', 0) }} мс
+            {%- else -%}—{%- endif -%}
+          </td>
+          <td>{{ segment.duration_ms | duration }}</td>
+          <td class="right">
+            {% if segment.status == 'done' and segment.audio_path %}
+              <audio controls preload="none" class="seg-audio"
+                     src="/api/v1/jobs/{{ job.id }}/segments/{{ segment.ordinal }}/audio"></audio>
+            {% elif segment.status == 'failed' %}
+              <span class="chip err">збій</span>
+            {% else %}
+              <span class="chip run">синтезується</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="bd">
+    <span class="tiny muted">
+      Показано {{ segments | length }} сегментів.
+      Просодія тут — те, що застосовано до кожного сегмента
+      (темп і пауза після нього при склейці).
+    </span>
+  </div>
+{% else %}
+  <div class="bd empty">
+    {% if view.job.status == 'queued' %}
+      <b>Завдання ще в черзі.</b>
+      <p class="muted tiny" style="margin: 6px 0 0">
+        Сегменти зʼявляться тут у міру синтезу — сторінка оновлюється сама.
+      </p>
+    {% elif view.job.status == 'failed' %}
+      <b>Сегментів немає: завдання впало на початку.</b>
+    {% else %}
+      <b>Сегментів поки немає.</b>
+      <p class="muted tiny" style="margin: 6px 0 0">
+        Вони зʼявляться в міру синтезу — сторінка оновлюється сама.
+      </p>
+    {% endif %}
+  </div>
+{% endif %}

@@ -21,8 +21,10 @@
                accept=".txt,.md,.markdown,.pdf,.docx,.epub,.html,.htm">
         <button class="btn primary" type="submit">Завантажити й розібрати</button>
         <p class="muted tiny" style="margin: 10px 0 0">
-          Витяг тексту зараз працює для <span class="mono">.txt</span> і
-          <span class="mono">.md</span>. PDF / DOCX / EPUB — етап 2 плану.
+          Читаються <span class="mono">.txt</span>, <span class="mono">.md</span>,
+          <span class="mono">.pdf</span>, <span class="mono">.docx</span>,
+          <span class="mono">.epub</span> і <span class="mono">.html</span>.
+          Скан-PDF без текстового шару не читається — потрібен OCR (його немає).
         </p>
       </form>
     </div>
@@ -104,13 +106,21 @@
           <b>F0 · фундамент</b> — завантаження з браузера, перегляд блоків,
           режими тексту, стан системи.
         </li>
-        <li>
-          <b>F1 · редактор</b> — правка блоків, емоції, прев'ю одного блоку
-          (наступний крок).
+        <li class="done">
+          <b>F1 · редактор</b> — правка блоків з автозбереженням, емоції
+          з прочитаною просодією, прев'ю блоку, гарячі клавіші.
+        </li>
+        <li class="done">
+          <b>F2 · синтез і черга</b> — «Озвучити все», прогрес через SSE,
+          скасування, повтор, сегментний плеєр, завантаження MP3.
+        </li>
+        <li class="done">
+          <b>F3 · масштаб</b> — фільтри й пошук, масові дії, сторінка голосів
+          із прослуховуванням, пресети.
         </li>
         <li>
-          <b>F2 · синтез і черга</b> — запуск озвучення, прогрес через SSE,
-          скасування, завантаження MP3.
+          <b>F4</b> — PDF/DOCX/EPUB, M4B, зразки голосів (після етапів 2–3
+          бекенду).
         </li>
       </ul>
       <p class="tiny muted" style="margin: 0">

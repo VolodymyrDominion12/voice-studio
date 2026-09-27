@@ -1,0 +1,18 @@
+{#
+  Деталі завдання одним рядком: скільки сегментів, скільки минуло, що вийшло.
+  Використовується в картці черги та на сторінці завдання.
+  Очікує: view.
+#}
+{% set job = view.job %}
+{% if job.status == 'queued' %}
+  у черзі — почнеться, коли звільниться слот
+{% elif job.status == 'running' %}
+  сегментів готово обмаль — прогрес уточнюється
+{% elif job.status == 'done' %}
+  готово за {{ view.elapsed_ms | duration }}
+  {%- if view.output_size %} · {{ view.output_size | bytesize }}{% endif %}
+{% elif job.status == 'cancelled' %}
+  скасовано — готові сегменти збережено на диску
+{% elif job.status == 'failed' %}
+  збій
+{% endif %}

@@ -1,0 +1,45 @@
+{% extends "layout/base.html" %}
+{% block title %}Черга — Voice Studio{% endblock %}
+
+{% block content %}
+{# Черга завдань (фаза F2). Прогрес оновлює static/js/jobs.js через SSE. #}
+<section class="card">
+  <div class="hd">
+    <h2>Черга завдань</h2>
+    <span class="chip line tiny">паралельно: {{ concurrency }}</span>
+    <span class="chip line tiny">виконується: {{ running }}</span>
+    <span class="chip line tiny">у черзі: {{ queued }}</span>
+    <span class="sp"></span>
+    <a class="btn sm" href="/">← Документи</a>
+  </div>
+  <div class="bd">
+    <p class="tiny muted" style="margin: 0">
+      Синтез виконується по сегментах: готові можна слухати, не чекаючи кінця
+      завдання. На CPU озвучення розділу триває від кількох хвилин до ~20 —
+      сторінку можна закрити, робота не зупиниться.
+    </p>
+  </div>
+</section>
+
+{% if views %}
+  <div class="jobs">
+    {% for view in views %}
+      {% include "partials/job_card.html" %}
+    {% endfor %}
+  </div>
+{% else %}
+  <section class="card">
+    <div class="bd empty">
+      <b>Завдань ще не було.</b>
+      <p class="muted tiny" style="margin: 6px 0 12px">
+        Відкрийте документ і натисніть «Озвучити все» — завдання зʼявиться тут.
+      </p>
+      <a class="btn primary" href="/">До документів</a>
+    </div>
+  </section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/js/jobs.js" defer></script>
+{% endblock %}

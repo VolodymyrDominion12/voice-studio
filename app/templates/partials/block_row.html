@@ -1,60 +1,75 @@
 {#
-  Рядок блоку. Фаза F0 — перегляд; правка тексту, емоції та прев'ю — F1
-  (docs/FRONTEND.md, розділ 6.2).
-  Очікує: view (BlockView), mode.
+  Рядок блоку в редакторі (фаза F1).
+
+  Очікує: view (BlockView), document, engine_caps, selected_voice,
+          emotion_order, emotion_labels, emotion_icons, profiles.
+
+  Локальний стан рядка (Alpine): dirty-прапорець і стан збереження.
+  Автозбереження, перерахунок просодії та прев'ю — у static/js/editor.js.
 #}
 {% set block = view.block %}
-<article class="blk {% if not block.speak %}blk-off{% endif %}">
+<article class="blk {% if not block.speak %}blk-off{% endif %}"
+         data-block-row
+         data-block-id="{{ block.id }}"
+         data-emotion="{{ block.emotion }}"
+         data-intensity="{{ block.intensity }}"
+         data-max-chars="{{ engine_caps.max_chars }}"
+         tabindex="-1">
+  {# Джерело для кнопки «повернути до нормалізованого». Тримаємо в JSON-скрипті
+     всередині рядка, а не в HTML-атрибуті: довгий текст з лапками й символами
+     `<` в атрибуті довелося б екранувати вручну. #}
+  <script type="application/json" data-normalized-source>{{ block.text_normalized }}</script>
+
   <div class="gut">
     <span class="ord mono">{{ '%03d' % block.ordinal }}</span>
     <span class="kind mono" title="{{ view.kind_label }}">{{ view.badge }}</span>
-    {% if block.speak %}
-      <span class="speak-on" title="озвучується">☑</span>
-    {% else %}
-      <span class="speak-off" title="не озвучується">☐</span>
-    {% endif %}
+    <label class="speak-toggle" title="озвучувати цей блок">
+      <input type="checkbox" data-speak {% if block.speak %}checked{% endif %}>
+    </label>
+    <label class="pick-toggle" title="вибрати для масової дії">
+      <input type="checkbox" data-pick>
+    </label>
   </div>
+
   <div class="cnt">
-    <div class="txt {% if block.kind == 'heading' %}txt-h{% elif block.kind == 'code' %}txt-mono{% endif %}">
-      {%- if view.text.strip() -%}
-        {{ view.text }}
-      {%- else -%}
-        <span class="muted">(порожній блок)</span>
-      {%- endif -%}
-    </div>
+    <textarea class="txt-input" data-text rows="2" spellcheck="true">{{ view.text }}</textarea>
 
     <div class="ctl">
-      {% if block.speak %}
-        <span class="chip line tiny">
-          {{ emotion_icon(block.emotion) }} {{ emotion_label(block.emotion) }}
-        </span>
-        <span class="tiny muted">інтенсивність {{ '%.1f' % block.intensity }}</span>
-        <span class="prosody mono tiny">{{ prosody_summary(view.prosody) }}</span>
-      {% else %}
-        <span class="chip">не озвучується</span>
-        <span class="tiny muted">код і таблиці типово пропускаються</span>
-      {% endif %}
+      <select data-emotion-select aria-label="емоція блоку">
+        {% for name in emotion_order %}
+          <option value="{{ name }}" {% if block.emotion == name %}selected{% endif %}>
+            {{ emotion_icons.get(name, '') }} {{ emotion_labels.get(name, name) }}
+          </option>
+        {% endfor %}
+      </select>
 
-      {% if block.text_edited %}
-        <span class="chip warn tiny">відредаговано вручну</span>
-      {% endif %}
-      {% if mode == 'effective' and block.text_edited %}
-        <span class="tiny muted">синтез візьме ваш текст</span>
-      {% endif %}
+      <label class="tiny range-label">
+        інтенсивність
+        <input type="range" data-intensity-range min="0" max="1" step="0.1"
+               value="{{ block.intensity }}" aria-label="інтенсивність емоції">
+        <span class="mono" data-intensity-value>{{ '%.1f' % block.intensity }}</span>
+      </label>
+
+      <span class="prosody mono tiny" data-prosody>{{ prosody_summary(view.prosody) }}</span>
+
+      <button class="btn sm" type="button" data-preview-btn
+              title="Синтезувати лише цей блок (Ctrl+Enter)">
+        ▶ Слухати
+      </button>
+
+      <button class="btn sm ghost" type="button" data-revert-btn
+              title="Прибрати мою правку й повернутися до нормалізованого тексту">
+        ↺ Повернути
+      </button>
+
+      <span class="sp save" data-save-state="saved">✓ Збережено</span>
     </div>
 
-    {% if mode == 'effective' and block.text_edited and block.text_normalized != block.text_raw %}
+    <div class="preview-slot" data-preview-slot></div>
+
+    {% if block.text_normalized != block.text_raw and not compact %}
       <details class="expand">
-        <summary>Різниця: вихідний / нормалізований / мій</summary>
-        <div class="diff">
-          <div class="col"><h4>Вихідний</h4>{{ block.text_raw }}</div>
-          <div class="col"><h4>Нормалізований</h4>{{ block.text_normalized }}</div>
-          <div class="col"><h4>Мій</h4>{{ block.text_edited }}</div>
-        </div>
-      </details>
-    {% elif mode == 'effective' and block.text_normalized != block.text_raw %}
-      <details class="expand">
-        <summary>Що змінив нормалізатор</summary>
+        <summary>Різниця: вихідний / нормалізований</summary>
         <div class="diff">
           <div class="col"><h4>Вихідний</h4>{{ block.text_raw }}</div>
           <div class="col"><h4>Нормалізований</h4>{{ block.text_normalized }}</div>

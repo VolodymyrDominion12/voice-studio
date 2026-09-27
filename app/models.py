@@ -173,11 +173,17 @@ class JobCreate(SQLModel):
     engine_id: str = "openai_compat"
     voice_id: str = ""
     options: dict[str, Any] = Field(default_factory=dict)
+    # Необовʼязковий ключ ідемпотентності: повторний запит із тим самим
+    # ключем повертає вже створене завдання, а не плодить друге.
+    client_token: str = ""
 
 
 class JobRead(SQLModel):
     id: int
     document_id: int
+    # Назва документа потрібна UI і клієнтам, щоб не робити N+1 запитів
+    # (docs/FRONTEND.md, знахідка 16.8b).
+    document_name: str = ""
     engine_id: str
     voice_id: str
     status: JobStatus

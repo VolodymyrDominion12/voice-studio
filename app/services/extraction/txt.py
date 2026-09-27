@@ -55,15 +55,23 @@ def _paragraphs_to_blocks(text: str) -> list[Block]:
 
 def extract_markdown(path: Path) -> list[Block]:
     """Витяг блоків із .md файлу через markdown-it-py."""
+    return markdown_to_blocks(_read_text_file(path))
+
+
+def markdown_to_blocks(markdown_text: str) -> list[Block]:
+    """Розібрати Markdown у блоки.
+
+    Публічна, бо нею користується і `.md`, і markitdown-екстрактор
+    (`extraction/documents.py`): конвертація «офісних» форматів у Markdown
+    не має тягнути другу реалізацію розбору структури.
+    """
     try:
         from markdown_it import MarkdownIt
     except ImportError as exc:
         raise ImportError("markdown-it-py не встановлено: uv sync") from exc
 
-    raw = _read_text_file(path)
     md = MarkdownIt()
-    tokens = md.parse(raw)
-    return _tokens_to_blocks(tokens)
+    return _tokens_to_blocks(md.parse(markdown_text))
 
 
 def _tokens_to_blocks(tokens) -> list[Block]:

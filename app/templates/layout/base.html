@@ -25,6 +25,8 @@
     </a>
     <nav class="nav">
       <a href="/" {% if active_nav == 'workspace' %}class="on"{% endif %}>Робоча стола</a>
+      <a href="/jobs" {% if active_nav == 'queue' %}class="on"{% endif %}>Черга</a>
+      <a href="/voices" {% if active_nav == 'voices' %}class="on"{% endif %}>Голоси</a>
       <a href="/settings" {% if active_nav == 'settings' %}class="on"{% endif %}>Система</a>
     </nav>
     <div class="top-right">

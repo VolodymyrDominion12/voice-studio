@@ -13,8 +13,9 @@
       <div class="tiny">Ліміт задається змінною <span class="mono">MAX_UPLOAD_MB</span>.</div>
     {% elif error_status == 422 %}
       <div class="tiny">
-        Витяг тексту з PDF/DOCX/EPUB — етап 2 плану
-        (<span class="mono">docs/PLAN.md</span>).
+        Підтримується: <span class="mono">{{ health.allowed_extensions }}</span>.
+        Скан-PDF без текстового шару потребує OCR — його в MVP немає
+        (<span class="mono">docs/PLAN.md</span>, етап 2).
       </div>
     {% endif %}
   </div>

@@ -1,0 +1,32 @@
+{#
+  Плеєр прев'ю одного блоку — фрагмент, який htmx вставляє під блоком.
+
+  Чесні межі, які тут показані явно (docs/FRONTEND.md, розд. 6.5):
+    * текст обрізано до ліміту рушія — кажемо, скільки саме долетіло;
+    * пауза після блоку тут НЕ звучить: вона вставляється під час склейки;
+    * перший синтез довший, бо шлюз завантажує модель.
+#}
+{% if error %}
+  <div class="preview-error" role="alert">
+    <b>Прев'ю не вдалося.</b> {{ error }}
+  </div>
+{% else %}
+  <div class="preview-ok">
+    <audio controls autoplay preload="auto" src="/ui/preview/{{ result.path.name }}"></audio>
+    <div class="tiny muted">
+      {{ result.effective_chars }} символів · голос <span class="mono">{{ result.voice_id }}</span>
+      {%- if result.cached %} · з кешу{% endif %}
+    </div>
+    {% if result.truncated %}
+      <div class="tiny warn-text">
+        ⚠ Долетіло {{ result.effective_chars }} із {{ result.requested_chars }} символів:
+        ліміт рушія — {{ result.max_chars }}. Решта буде озвучена при повному синтезі
+        (він ділить текст на сегменти).
+      </div>
+    {% endif %}
+    <div class="tiny muted">
+      Пауза після блоку ({{ result.pause_after_ms }} мс) додається під час склейки,
+      тому в прев'ю її не чути.
+    </div>
+  </div>
+{% endif %}

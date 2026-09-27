@@ -1,0 +1,51 @@
+{#
+  Картка одного завдання в черзі. Очікує: view (словник із app/ui/router.py).
+  Прогрес оновлює static/js/jobs.js через SSE (або опитуванням, якщо SSE мовчить).
+#}
+{% set job = view.job %}
+<article class="job-card" data-job-card="{{ job.id }}"
+         data-job-status="{{ job.status }}"
+         data-job-progress="{{ job.progress or 0 }}">
+  <div class="job-line">
+    <span class="mono job-id">#{{ job.id }}</span>
+    <span class="chip {{ view.chip[1] }}" data-job-chip>{{ view.chip[0] }}</span>
+    <b>{{ view.document_name }}</b>
+    <span class="tiny muted">
+      {{ job.engine_id }}{% if job.voice_id %} · {{ job.voice_id }}{% endif %}
+    </span>
+    <span class="sp"></span>
+    <span class="tiny muted" data-job-percent>{{ view.percent }}</span>
+  </div>
+
+  <div class="job-line">
+    <div class="bar {% if job.status == 'done' %}ok{% elif job.status == 'failed' %}err{% endif %}">
+      <i data-job-bar style="width: {{ (job.progress * 100) | round(1) }}%"></i>
+    </div>
+    <span class="tiny muted" data-job-detail>{% include "partials/job_detail_text.html" %}</span>
+  </div>
+
+  {% if job.error %}
+    <div class="tiny err-text" data-job-error>{{ job.error }}</div>
+  {% endif %}
+
+  <div class="job-actions">
+    <a class="btn sm" href="/jobs/{{ job.id }}">Деталі</a>
+
+    {% if job.status == 'running' or job.status == 'queued' %}
+      <form method="post" action="/ui/jobs/{{ job.id }}/cancel" class="inline">
+        <button class="btn sm" type="submit">Скасувати</button>
+      </form>
+    {% elif job.status == 'done' %}
+      <a class="btn sm primary" href="/api/v1/jobs/{{ job.id }}/download">
+        ⬇ Завантажити {{ view.output_format or 'файл' }}
+      </a>
+      {% if view.output_size %}
+        <span class="tiny muted">{{ view.output_size | bytesize }}</span>
+      {% endif %}
+    {% else %}
+      <form method="post" action="/ui/jobs/{{ job.id }}/retry" class="inline">
+        <button class="btn sm" type="submit">Повторити</button>
+      </form>
+    {% endif %}
+  </div>
+</article>

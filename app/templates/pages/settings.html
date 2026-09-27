@@ -29,6 +29,7 @@
       <div class="bd">
         <dl class="kv">
           <dt>TTS-шлюз</dt><dd class="mono">{{ health.tts_base_url }}</dd>
+          <dt>Модель у запитах</dt><dd class="mono">{{ health.tts_model }}</dd>
           <dt>Рушій за замовчуванням</dt><dd class="mono">{{ health.default_engine }}</dd>
           <dt>Голос за замовчуванням</dt><dd class="mono">{{ health.default_voice }}</dd>
           <dt>Паралельних синтезів</dt><dd>{{ health.synth_concurrency }}</dd>
@@ -44,11 +45,38 @@
             {% endif %}
           </dd>
         </dl>
-        <p class="tiny muted" style="margin: 10px 0 0">
-          Проба шлюзу тут навмисно відсутня: перевірка мережі на кожному
-          рендері сторінки була б повільною. Окремий пробник — у планах
-          (<span class="mono">docs/FRONTEND.md</span>, знахідка 16.1).
-        </p>
+
+        <div class="sep"></div>
+
+        {# Перевірка шлюзу — на вимогу: вона ходить у мережу з таймаутом,
+           тож не має сповільнювати кожне відкриття сторінки. #}
+        {% if tts_probe %}
+          {# УВАГА: саме `!= False`, а не `is not False`: у Jinja `is` вводить
+             тест за іменем, і `is not False` падає з «No test named 'False'». #}
+          {% if tts_probe.reachable and tts_probe.model_installed != False %}
+            <div class="alert ok">
+              <b>● Шлюз живий</b> — {{ tts_probe.latency_ms }} мс.
+              Модель <span class="mono">{{ tts_probe.configured_model }}</span> на місці.
+              {% if tts_probe.models %}
+                <div class="tiny">Доступні моделі:
+                  <span class="mono">{{ tts_probe.models | join(', ') }}</span></div>
+              {% endif %}
+            </div>
+          {% else %}
+            <div class="alert err">
+              <b>Синтез не працюватиме.</b> {{ tts_probe.hint or 'Шлюз не відповідає.' }}
+              {% if tts_probe.models %}
+                <div class="tiny">Установлені моделі:
+                  <span class="mono">{{ tts_probe.models | join(', ') }}</span></div>
+              {% endif %}
+            </div>
+          {% endif %}
+        {% else %}
+          <a class="btn sm" href="/settings?probe=1">Перевірити шлюз зараз</a>
+          <span class="tiny muted" style="margin-left: 8px">
+            займе до 3 с — це мережевий запит
+          </span>
+        {% endif %}
       </div>
     </section>
   </div>
@@ -96,14 +124,14 @@
   <section class="card">
     <div class="bd">
       <ul class="phases">
-        <li class="done"><b>F0 · фундамент</b> — цей інтерфейс.</li>
-        <li><b>F1 · редактор</b> — правка блоків, емоції, прев'ю блоку.</li>
-        <li><b>F2 · синтез і черга</b> — озвучення, SSE-прогрес, завантаження.</li>
-        <li><b>F3 · масштаб</b> — масові дії, пошук, сегментний плеєр.</li>
+        <li class="done"><b>F0 · фундамент</b> — робоча стола, завантаження, перегляд.</li>
+        <li class="done"><b>F1 · редактор</b> — правка, емоції, прев'ю блоку.</li>
+        <li class="done"><b>F2 · синтез і черга</b> — озвучення, SSE-прогрес, завантаження.</li>
+        <li class="done"><b>F3 · масштаб</b> — фільтри, масові дії, голоси, пресети.</li>
         <li><b>F4</b> — PDF/DOCX, M4B, зразки голосів (після етапів 2–3 бекенду).</li>
       </ul>
       <p class="tiny muted" style="margin: 10px 0 0">
-        Перелік операцій, яких ще бракує в API, — розділ 16 у
+        Операції, яких ще бракує в API, — розділ 16 у
         <span class="mono">docs/FRONTEND.md</span>.
       </p>
     </div>

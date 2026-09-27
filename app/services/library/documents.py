@@ -22,11 +22,13 @@ from typing import BinaryIO
 from sqlmodel import Session, select
 
 from app.config import Settings, get_settings
-from app.models import Block, Document, DocumentStatus, utc_now
+from app.models import Block, Document, DocumentStatus, Job, Segment, utc_now
+from app.services.extraction.documents import MARKITDOWN_SUFFIXES
 from app.services.extraction.txt import extract_text_file
 from app.services.library.errors import (
     DocumentNotFoundError,
     ExtractorUnavailableError,
+    ScanPdfError,
     UnsupportedFormatError,
     UploadTooLargeError,
 )
@@ -58,8 +60,11 @@ _MIME_BY_SUFFIX: dict[str, str] = {
     ".htm":      "text/html",
 }
 
-# Екстрактори, які вже реалізовано
-_IMPLEMENTED_SUFFIXES = frozenset({".txt", ".md", ".markdown"})
+# Екстрактори, які вже реалізовано (txt/md — власні, решта — markitdown)
+_IMPLEMENTED_SUFFIXES = frozenset({
+    ".txt", ".md", ".markdown",
+    ".pdf", ".docx", ".epub", ".html", ".htm",
+})
 
 
 def mime_from_suffix(suffix: str) -> str:
@@ -136,12 +141,25 @@ def save_upload(filename: str, stream: BinaryIO, settings: Settings | None = Non
 
 def extract_blocks(path: Path, suffix: str) -> list[Block]:
     """Витягти блоки з файлу. Каскад екстракторів за розширенням (ADR-009)."""
-    if suffix in _IMPLEMENTED_SUFFIXES:
+    if suffix in (".txt", ".md", ".markdown"):
         return extract_text_file(path)
 
+    if suffix == ".pdf":
+        from app.services.extraction.pdf import PdfScanDetectedError, extract_pdf
+
+        try:
+            return extract_pdf(path)
+        except PdfScanDetectedError as exc:
+            raise ScanPdfError(str(exc)) from exc
+
+    if suffix in MARKITDOWN_SUFFIXES:
+        from app.services.extraction.documents import extract_document
+
+        return extract_document(path)
+
     raise ExtractorUnavailableError(
-        f"Екстрактор для {suffix!r} ще не реалізований (заплановано в Етапі 2). "
-        "Завантажте .txt або .md файл."
+        f"Екстрактор для {suffix!r} ще не реалізований. "
+        f"Підтримується: {sorted(_IMPLEMENTED_SUFFIXES)}"
     )
 
 
@@ -218,6 +236,11 @@ def create_from_path(
         session.add(block)
         blocks.append(block)
 
+    if suffix == ".pdf":
+        from app.services.extraction.pdf import page_count
+
+        document.page_count = page_count(path) or None
+
     document.status = DocumentStatus.READY
     document.updated_at = utc_now()
     session.add(document)
@@ -283,12 +306,33 @@ def renormalize(session: Session, document_id: int) -> DocumentResult:
 
 
 def delete_document(session: Session, document_id: int, remove_files: bool = True) -> None:
-    """Видалити документ, його блоки та (опційно) вихідний файл із диска."""
+    """Видалити документ разом із його блоками, завданнями та сегментами.
+
+    Порядок обовʼязковий: сегменти → завдання → блоки → документ. Якщо
+    видалити документ одразу, SQLAlchemy спробує обнулити `jobs.document_id`,
+    а стовпець NOT NULL — і видалення падає з IntegrityError. Саме так це
+    й ламалося, доки не зʼявився тест із завданням.
+    """
     document = get_document(session, document_id)
     source = Path(document.source_path) if document.source_path else None
 
+    job_ids = [
+        job.id
+        for job in session.exec(select(Job).where(Job.document_id == document_id)).all()
+    ]
+    for job_id in job_ids:
+        for segment in session.exec(select(Segment).where(Segment.job_id == job_id)).all():
+            session.delete(segment)
+    session.flush()
+
+    for job in session.exec(select(Job).where(Job.document_id == document_id)).all():
+        session.delete(job)
+    session.flush()
+
     for block in list_document_blocks(session, document_id):
         session.delete(block)
+    session.flush()
+
     session.delete(document)
     session.commit()
 
@@ -298,7 +342,7 @@ def delete_document(session: Session, document_id: int, remove_files: bool = Tru
         except OSError as exc:  # файл міг зникнути поза застосунком
             logger.warning("Не вдалося видалити %s: %s", source, exc)
 
-    logger.info("Документ %s видалено", document_id)
+    logger.info("Документ %s видалено (завдань: %d)", document_id, len(job_ids))
 
 
 def copy_to_uploads(path: Path, settings: Settings | None = None) -> Path:

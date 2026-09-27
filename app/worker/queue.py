@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -28,13 +28,36 @@ from app.models import (
     JobStatus,
     Segment,
     SegmentStatus,
+    utc_now,
 )
 from app.services.audio.assemble import build_audio
 from app.services.expression.profiles import get_prosody
+from app.services.library.blocks import block_effective_text
 from app.services.segment.splitter import split_sentences
 from app.services.tts.openai_compat import get_openai_compat_engine
 
 logger = logging.getLogger(__name__)
+
+
+# Пауза на межі абзацу/розділу довша за паузу між реченнями — це те, що чути
+# на слух як «структура тексту» (ARCHITECTURE §2.3).
+_PARAGRAPH_PAUSE_FACTOR = 1.5
+
+
+@dataclass
+class BlockTask:
+    """Знімок блоку для синтезу — простий, без ORM-привʼязки.
+
+    Потрібен тому, що синтез іде ПОЗА сесією: сесія закривається, а `commit()`
+    у ній робить ORM-обʼєкти застарілими. Звернення до полів відʼєднаного
+    обʼєкта падає з DetachedInstanceError, тож усе потрібне знімаємо заздалегідь.
+    """
+
+    id: int
+    ordinal: int
+    text: str
+    emotion: str
+    intensity: float
 
 # ── SSE-брокер ─────────────────────────────────────────────────────────────────
 # job_id → список черг передплатників
@@ -91,6 +114,43 @@ def enqueue_job(job_id: int) -> None:
     _get_queue().put_nowait(job_id)
 
 
+def requeue_incomplete_jobs() -> list[int]:
+    """Повернути в чергу завдання, обірвані перезапуском процесу.
+
+    Черга живе лише в памʼяті процесу, тому без цього кроку завдання, що
+    лишилось у `queued`/`running` у SQLite, не виконалось би ніколи —
+    обіцянка ADR-007 («синтез продовжується з місця зупинки») на рівні
+    завдання не працювала (docs/FRONTEND.md, знахідка 16.2).
+
+    Ідемпотентність забезпечують файли сегментів на диску: готові WAV не
+    синтезуються вдруге, тож «продовжити» тут означає «догнати решту».
+
+    Викликається з lifespan при старті. Повертає id повернутих завдань.
+    """
+    requeued: list[int] = []
+    with Session(get_engine()) as session:
+        stale = session.exec(
+            select(Job).where(Job.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]))
+        ).all()
+
+        for job in stale:
+            if job.status == JobStatus.RUNNING:
+                # Процес, який його виконував, більше не існує
+                job.status = JobStatus.QUEUED
+                job.error = ""
+                session.add(job)
+            requeued.append(job.id or 0)
+
+        session.commit()
+
+    for job_id in requeued:
+        enqueue_job(job_id)
+
+    if requeued:
+        logger.info("Повернуто в чергу незавершених завдань: %s", requeued)
+    return requeued
+
+
 async def worker_loop() -> None:
     """Головний цикл воркера. Запускається через lifespan FastAPI."""
     settings = get_settings()
@@ -108,14 +168,37 @@ async def worker_loop() -> None:
 
         def _done(t: asyncio.Task, jid: int = job_id) -> None:
             _running_jobs.pop(jid, None)
-            if t.exception():
-                logger.error("Завдання %d завершилось з помилкою: %s", jid, t.exception())
+            # Порядок важливий: у скасованої задачі t.exception() кидає
+            # CancelledError, і колбек ламався під час зупинки застосунку.
+            if t.cancelled():
+                logger.info("Завдання %d скасовано", jid)
+                return
+            error = t.exception()
+            if error:
+                logger.error("Завдання %d завершилось з помилкою: %s", jid, error)
 
         task.add_done_callback(_done)
 
 
 async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
-    """Обробити одне завдання синтезу."""
+    """Обробити завдання, гарантовано доводячи його до кінцевого стану.
+
+    Без цієї обгортки несподівана помилка (мережа, моделі, диск) лишала
+    завдання в статусі `running` назавжди: користувач бачив би 0 %, а
+    «скасувати» і «повторити» були б недоступні. Тепер будь-яка помилка
+    стає видимим `failed` із текстом причини.
+    """
+    try:
+        await _run_job(job_id, semaphore)
+    except asyncio.CancelledError:
+        raise  # скасування користувачем — не помилка
+    except Exception as exc:
+        logger.exception("Завдання %d впало несподівано", job_id)
+        await _fail_job(job_id, f"Несподівана помилка: {exc}")
+
+
+async def _run_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
+    """Основна робота: сегменти, синтез, збірка."""
     settings = get_settings()
     engine = get_openai_compat_engine()
 
@@ -139,16 +222,45 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
             _finish_job(session, job, JobStatus.FAILED, "Немає блоків для синтезу")
             return
 
+        # Знімаємо з job і блоків усе потрібне, доки сесія відкрита.
+        # `commit()` (у _start_job нижче) робить ORM-обʼєкти застарілими, і
+        # звернення до їхніх полів ПОЗА сесією падає з DetachedInstanceError —
+        # саме так цей шлях і ламався, доки завдання не можна було створити.
+        tasks = [
+            BlockTask(
+                id=block.id or 0,
+                ordinal=block.ordinal,
+                text=block_effective_text(block),
+                emotion=block.emotion,
+                intensity=block.intensity,
+            )
+            for block in blocks
+        ]
+
+        # Прибираємо рядки сегментів попереднього прогону цього ж завдання.
+        # Файли на диску НЕ чіпаємо — саме на них тримається ідемпотентність
+        # (ADR-007): готовий WAV не синтезується вдруге. Без цього кроку
+        # повторний запуск додавав би сегменти дублем (знахідка 16.8c).
+        # Голос теж потрібен поза сесією: після commit() обʼєкт job стає
+        # застарілим, і читання job.voice_id у циклі синтезу падало б.
+        voice_id = job.voice_id or settings.default_voice
+
+        stale = session.exec(select(Segment).where(Segment.job_id == job_id)).all()
+        for segment in stale:
+            session.delete(segment)
+        session.commit()
+
         _start_job(session, job)
 
-    # Синтезуємо сегменти
+    # Синтезуємо сегменти (лише прості дані, без ORM-обʼєктів)
+    max_chars = engine.capabilities().max_chars
     all_segment_paths: list[Path] = []
+    # По-сегментна просодія: пауза ПІСЛЯ кожного сегмента і корекція гучності.
+    # Без цього емоція впливала б лише на темп, а «сумно» не мало б довгих пауз.
+    pauses_ms: list[int] = []
+    energies_db: list[float] = []
     total_segments = sum(
-        len(split_sentences(
-            (b.text_edited or b.text_normalized or b.text_raw),
-            max_chars=engine.capabilities().max_chars,
-        ))
-        for b in blocks
+        len(split_sentences(task.text, max_chars=max_chars)) for task in tasks
     )
     done_count = 0
 
@@ -162,13 +274,14 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
     })
 
     seg_ordinal = 0
-    for block in blocks:
-        text = block.text_edited or block.text_normalized or block.text_raw
+    for task in tasks:
+        text = task.text
         if not text.strip():
             continue
 
-        prosody = get_prosody(block.emotion, block.intensity)
-        sentences = split_sentences(text, max_chars=engine.capabilities().max_chars)
+        prosody = get_prosody(task.emotion, task.intensity)
+        sentences = split_sentences(text, max_chars=max_chars)
+        segments_in_block = 0
 
         for sent in sentences:
             if not sent.strip():
@@ -177,7 +290,7 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
             seg_path = (
                 settings.renders_dir
                 / "segments"
-                / f"job{job_id}_block{block.id}_seg{seg_ordinal}.wav"
+                / f"job{job_id}_block{task.id}_seg{seg_ordinal}.wav"
             )
             seg_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -186,16 +299,26 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
                 logger.debug("Сегмент вже є: %s", seg_path.name)
             else:
                 from app.services.tts.base import SynthRequest
-                async with semaphore:
-                    await asyncio.to_thread(
-                        engine.synthesize,
-                        SynthRequest(
-                            text=sent,
-                            voice_id=job.voice_id or settings.default_voice,
-                            speed=prosody.speed,
-                            output_path=seg_path,
-                        ),
+
+                try:
+                    async with semaphore:
+                        await asyncio.to_thread(
+                            engine.synthesize,
+                            SynthRequest(
+                                text=sent,
+                                voice_id=voice_id,
+                                speed=prosody.speed,
+                                output_path=seg_path,
+                            ),
+                        )
+                except Exception as exc:
+                    # Не продовжуємо: якщо шлюз лежить, решта сегментів теж
+                    # впаде — краще зупинитись і сказати причину.
+                    await _fail_job(
+                        job_id,
+                        f"Синтез сегмента {seg_ordinal} не вдався: {exc}",
                     )
+                    return
 
             # Зберегти сегмент у БД
             with Session(get_engine()) as session:
@@ -206,7 +329,7 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
 
                 seg = Segment(
                     job_id=job_id,
-                    block_id=block.id,
+                    block_id=task.id,
                     ordinal=seg_ordinal,
                     text=sent,
                     prosody_json={
@@ -225,12 +348,15 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
                 session.commit()
 
             all_segment_paths.append(seg_path)
+            pauses_ms.append(prosody.pause_after_ms)
+            energies_db.append(prosody.energy_db)
+            segments_in_block += 1
             seg_ordinal += 1
 
             await _broadcast(job_id, {
                 "event": "segment",
                 "job_id": job_id,
-                "block_id": block.id,
+                "block_id": task.id,
                 "ordinal": seg_ordinal,
                 "status": "done",
             })
@@ -243,6 +369,10 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
                 "status": "running",
             })
 
+        # Кінець абзацу: подовжуємо паузу після його останнього сегмента
+        if segments_in_block and pauses_ms:
+            pauses_ms[-1] = round(pauses_ms[-1] * _PARAGRAPH_PAUSE_FACTOR)
+
     # Збірка фінального файлу
     if all_segment_paths:
         try:
@@ -254,6 +384,8 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
                 pause_ms=400,
                 target_sample_rate=settings.target_sample_rate,
                 target_lufs=settings.target_lufs,
+                pauses_ms=pauses_ms,
+                energies_db=energies_db,
             )
             output_path = str(results.get("mp3", results.get("wav", "")))
         except Exception as exc:
@@ -281,7 +413,7 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
 
 def _start_job(session: Session, job: Job) -> None:
     job.status = JobStatus.RUNNING
-    job.started_at = datetime.now(UTC).replace(tzinfo=None)
+    job.started_at = utc_now()
     session.add(job)
     session.commit()
 
@@ -290,7 +422,7 @@ def _finish_job(session: Session, job: Job, status: JobStatus, error: str = "") 
     job.status = status
     job.error = error
     job.progress = 1.0 if status == JobStatus.DONE else job.progress
-    job.finished_at = datetime.now(UTC).replace(tzinfo=None)
+    job.finished_at = utc_now()
     session.add(job)
     session.commit()
 
@@ -304,7 +436,7 @@ async def cancel_job(job_id: int) -> bool:
         if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
             return False
         job.status = JobStatus.CANCELLED
-        job.finished_at = datetime.now(UTC).replace(tzinfo=None)
+        job.finished_at = utc_now()
         session.add(job)
         session.commit()
 
@@ -314,3 +446,25 @@ async def cancel_job(job_id: int) -> bool:
 
     await _broadcast(job_id, {"event": "cancelled", "job_id": job_id})
     return True
+
+
+async def _fail_job(job_id: int, error: str) -> None:
+    """Позначити завдання невдалим і повідомити підписників.
+
+    Єдина точка, де завдання стає `failed`: і для помилки синтезу, і для
+    несподіваних винятків. Так стан у БД і подія в SSE не розходяться.
+    """
+    with Session(get_engine()) as session:
+        job = session.get(Job, job_id)
+        if not job:
+            return
+        if job.status in (JobStatus.DONE, JobStatus.CANCELLED):
+            return  # уже завершено — не переписуємо кінцевий стан
+        _finish_job(session, job, JobStatus.FAILED, error)
+
+    await _broadcast(job_id, {
+        "event": "error",
+        "job_id": job_id,
+        "status": JobStatus.FAILED,
+        "error": error,
+    })
