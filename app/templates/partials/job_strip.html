@@ -1,0 +1,31 @@
+{#
+  Стрічка останніх завдань синтезу. Фаза F0 показує лише стан: створення
+  завдання, SSE-прогрес і скасування — фаза F2 (docs/FRONTEND.md, розділ 17).
+#}
+{% if jobs %}
+  {% for job in jobs %}
+    {% set chip = job_status_chip(job.status) %}
+    <div class="jobrow">
+      <span class="jobrow-id mono">#{{ job.id }}</span>
+      <span class="chip {{ chip[1] }}">{{ chip[0] }}</span>
+      <span class="tiny muted">
+        документ {{ job.document_id }} · {{ job.engine_id }}
+        {% if job.voice_id %}· {{ job.voice_id }}{% endif %}
+      </span>
+      {% if job.status == 'running' or job.status == 'queued' %}
+        <span class="bar"><i style="width: {{ (job.progress * 100) | round(1) }}%"></i></span>
+        <span class="tiny mono">{{ job.progress | percent }}</span>
+      {% endif %}
+      {% if job.error %}
+        <span class="tiny err-text">{{ job.error }}</span>
+      {% endif %}
+      {% if job.output_path %}
+        <span class="tiny mono muted">{{ job.output_path.split('/')[-1] }}</span>
+      {% endif %}
+    </div>
+  {% endfor %}
+{% else %}
+  <p class="muted tiny" style="margin: 0">
+    Завдань ще не було. Запуск синтезу зʼявиться у фазі F2.
+  </p>
+{% endif %}

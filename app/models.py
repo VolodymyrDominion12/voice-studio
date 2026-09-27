@@ -3,16 +3,24 @@
 Таблиці: Document, Block, Segment, Job, Voice, Preset.
 Усі часові мітки — UTC, зберігаються без часового поясу (SQLite не підтримує
 timestamptz, але ми завжди передаємо UTC).
+
+УВАГА: у цьому файлі не можна додавати `from __future__ import annotations`
+і не можна повертати анотацію `datetime` замість `NaiveDatetime`.
+Обидві речі ламають роботу з БД (README §11, блокери 1 і 2):
+
+  1) із відкладеними анотаціями SQLModel 0.0.47 передає в `relationship()`
+     рядок `list['Block']` замість класу → `InvalidRequestError` на будь-якому
+     запиті до БД;
+  2) наївний час без анотації `NaiveDatetime` не проходить валідацію SQLModel
+     → `ValueError: Datetime values must have timezone information`.
 """
 
-from __future__ import annotations
-
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from pydantic import NaiveDatetime
 from sqlmodel import JSON, Column, Field, Relationship, SQLModel
-
 
 # ── Перелічення ────────────────────────────────────────────────────────────────
 
@@ -49,8 +57,13 @@ class SegmentStatus(StrEnum):
 
 # ── Хелпери ────────────────────────────────────────────────────────────────────
 
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+def utc_now() -> datetime:
+    """Поточний UTC без tzinfo — узгоджено з полями `NaiveDatetime`.
+
+    Єдине місце, де створюється «зараз» для БД: якщо колись знадобиться
+    tz-aware час, змінювати треба тут.
+    """
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 # ── Document ───────────────────────────────────────────────────────────────────
@@ -66,8 +79,8 @@ class Document(SQLModel, table=True):
     source_path: str = ""          # шлях до файлу в data/uploads/
     page_count: int | None = None  # для PDF
     status: DocumentStatus = DocumentStatus.PENDING
-    created_at: datetime = Field(default_factory=_now_utc)
-    updated_at: datetime = Field(default_factory=_now_utc)
+    created_at: NaiveDatetime = Field(default_factory=utc_now)
+    updated_at: NaiveDatetime = Field(default_factory=utc_now)
 
     blocks: list["Block"] = Relationship(back_populates="document")
     jobs: list["Job"] = Relationship(back_populates="document")
@@ -80,8 +93,8 @@ class DocumentRead(SQLModel):
     mime: str
     page_count: int | None
     status: DocumentStatus
-    created_at: datetime
-    updated_at: datetime
+    created_at: NaiveDatetime
+    updated_at: NaiveDatetime
 
 
 class DocumentWithBlocks(DocumentRead):
@@ -147,9 +160,9 @@ class Job(SQLModel, table=True):
     options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     output_path: str = ""            # шлях до готового MP3/WAV
     error: str = ""
-    created_at: datetime = Field(default_factory=_now_utc)
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
+    created_at: NaiveDatetime = Field(default_factory=utc_now)
+    started_at: NaiveDatetime | None = None
+    finished_at: NaiveDatetime | None = None
 
     document: "Document" = Relationship(back_populates="jobs")
     segments: list["Segment"] = Relationship(back_populates="job")
@@ -171,9 +184,9 @@ class JobRead(SQLModel):
     progress: float
     output_path: str
     error: str
-    created_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
+    created_at: NaiveDatetime
+    started_at: NaiveDatetime | None
+    finished_at: NaiveDatetime | None
 
 
 # ── Segment ────────────────────────────────────────────────────────────────────

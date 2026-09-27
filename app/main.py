@@ -4,29 +4,35 @@
   - healthcheck (використовується Docker HEALTHCHECK)
   - /api/v1/engines  — каталог рушіїв
   - /api/v1/emotions — профілі емоцій
-  - /api/v1/documents — завантаження, редагування, нормалізація
+  - /api/v1/documents — завантаження, редагування, нормалізація, видалення
   - /api/v1/jobs    — синтез, SSE-прогрес, завантаження
   - /api/v1/preview — швидкий синтез блоку
+  - HTML-інтерфейс (app/ui, ADR-008): робоча стола, документ, система
   - asyncio-воркер запускається разом із процесом
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
+from app.api.documents import router as documents_router
+from app.api.engines import router as engines_router
+from app.api.jobs import router as jobs_router
+from app.api.preview import router as preview_router
 from app.config import get_settings
 from app.db import create_db_and_tables
 from app.services.expression.profiles import all_profiles_dict
+from app.services.system import health_snapshot
+from app.ui.router import router as ui_router
+from app.version import __version__
 
 logger = logging.getLogger("voice_studio")
-
-__version__ = "0.1.0"
 
 
 @asynccontextmanager
@@ -51,10 +57,8 @@ async def lifespan(app: FastAPI):
 
     # Зупинка
     worker_task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await worker_task
-    except asyncio.CancelledError:
-        pass
     logger.info("Зупинка Voice Studio")
 
 
@@ -65,32 +69,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── Підключення роутерів ───────────────────────────────────────────────────────
-from app.api.documents import router as documents_router
-from app.api.engines import router as engines_router
-from app.api.jobs import router as jobs_router
-from app.api.preview import router as preview_router
-
 app.include_router(documents_router)
 app.include_router(engines_router)
 app.include_router(jobs_router)
 app.include_router(preview_router)
+app.include_router(ui_router)
+
+# Статика інтерфейсу (css; htmx/Alpine зʼявляться у фазі F1)
+_settings = get_settings()
+_settings.static_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_settings.static_dir)), name="static")
 
 
 # ── Базові ендпоінти ───────────────────────────────────────────────────────────
 
 @app.get("/api/v1/health", tags=["service"])
 async def health() -> dict[str, object]:
-    """Healthcheck. Використовується Docker HEALTHCHECK і фронтендом."""
-    settings = get_settings()
-    return {
-        "status": "ok",
-        "version": __version__,
-        "data_dir": str(settings.data_dir),
-        "data_dir_writable": settings.data_dir.is_dir() and os.access(settings.data_dir, os.W_OK),
-        "tts_base_url": settings.tts_base_url,
-        "default_engine": settings.default_engine,
-    }
+    """Healthcheck. Використовується Docker HEALTHCHECK і фронтендом.
+
+    Той самий знімок, що й на сторінці «Система» (app/services/system.py),
+    щоб JSON-API й інтерфейс не розходились.
+    """
+    return health_snapshot()
 
 
 @app.get("/api/v1/emotions", tags=["expression"])

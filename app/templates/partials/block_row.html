@@ -1,0 +1,65 @@
+{#
+  Рядок блоку. Фаза F0 — перегляд; правка тексту, емоції та прев'ю — F1
+  (docs/FRONTEND.md, розділ 6.2).
+  Очікує: view (BlockView), mode.
+#}
+{% set block = view.block %}
+<article class="blk {% if not block.speak %}blk-off{% endif %}">
+  <div class="gut">
+    <span class="ord mono">{{ '%03d' % block.ordinal }}</span>
+    <span class="kind mono" title="{{ view.kind_label }}">{{ view.badge }}</span>
+    {% if block.speak %}
+      <span class="speak-on" title="озвучується">☑</span>
+    {% else %}
+      <span class="speak-off" title="не озвучується">☐</span>
+    {% endif %}
+  </div>
+  <div class="cnt">
+    <div class="txt {% if block.kind == 'heading' %}txt-h{% elif block.kind == 'code' %}txt-mono{% endif %}">
+      {%- if view.text.strip() -%}
+        {{ view.text }}
+      {%- else -%}
+        <span class="muted">(порожній блок)</span>
+      {%- endif -%}
+    </div>
+
+    <div class="ctl">
+      {% if block.speak %}
+        <span class="chip line tiny">
+          {{ emotion_icon(block.emotion) }} {{ emotion_label(block.emotion) }}
+        </span>
+        <span class="tiny muted">інтенсивність {{ '%.1f' % block.intensity }}</span>
+        <span class="prosody mono tiny">{{ prosody_summary(view.prosody) }}</span>
+      {% else %}
+        <span class="chip">не озвучується</span>
+        <span class="tiny muted">код і таблиці типово пропускаються</span>
+      {% endif %}
+
+      {% if block.text_edited %}
+        <span class="chip warn tiny">відредаговано вручну</span>
+      {% endif %}
+      {% if mode == 'effective' and block.text_edited %}
+        <span class="tiny muted">синтез візьме ваш текст</span>
+      {% endif %}
+    </div>
+
+    {% if mode == 'effective' and block.text_edited and block.text_normalized != block.text_raw %}
+      <details class="expand">
+        <summary>Різниця: вихідний / нормалізований / мій</summary>
+        <div class="diff">
+          <div class="col"><h4>Вихідний</h4>{{ block.text_raw }}</div>
+          <div class="col"><h4>Нормалізований</h4>{{ block.text_normalized }}</div>
+          <div class="col"><h4>Мій</h4>{{ block.text_edited }}</div>
+        </div>
+      </details>
+    {% elif mode == 'effective' and block.text_normalized != block.text_raw %}
+      <details class="expand">
+        <summary>Що змінив нормалізатор</summary>
+        <div class="diff">
+          <div class="col"><h4>Вихідний</h4>{{ block.text_raw }}</div>
+          <div class="col"><h4>Нормалізований</h4>{{ block.text_normalized }}</div>
+        </div>
+      </details>
+    {% endif %}
+  </div>
+</article>

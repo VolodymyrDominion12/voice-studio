@@ -87,7 +87,7 @@ async def job_events(job_id: int, session: Session = Depends(get_session)):
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield ": keepalive\n\n"
                     continue
 

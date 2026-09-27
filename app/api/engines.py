@@ -9,7 +9,6 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
-from app.services.tts.base import EngineCapabilities, Voice
 from app.services.tts.openai_compat import get_openai_compat_engine
 
 router = APIRouter(prefix="/api/v1/engines", tags=["engines"])

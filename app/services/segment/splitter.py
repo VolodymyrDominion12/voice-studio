@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import re
 
-
 # Абревіатури, які не є кінцем речення
 _ABBREV = re.compile(
     r"\b(т\.д|т\.ч|тобто|напр|і\.т|ін|проф|акад|д-р|р|с|вул|пр|пл|кв)\."

@@ -1,0 +1,121 @@
+{% extends "layout/base.html" %}
+{% block title %}Робоча стола — Voice Studio{% endblock %}
+
+{% block content %}
+  <section class="card">
+    <div class="hd">
+      <h2>Завантажити текст</h2>
+      <span class="sp"></span>
+      <span class="tiny muted">
+        до {{ health.max_upload_mb }} МБ · дозволено
+        <span class="mono">{{ health.allowed_extensions }}</span>
+      </span>
+    </div>
+    <div class="bd">
+      <form class="drop" method="post" action="/ui/documents" enctype="multipart/form-data">
+        <div class="big">Оберіть файл із текстом</div>
+        <p class="muted tiny" style="margin: 4px 0 12px">
+          Файл розіб'ється на блоки, а текст пройде нормалізацію для озвучення.
+        </p>
+        <input type="file" name="file" required
+               accept=".txt,.md,.markdown,.pdf,.docx,.epub,.html,.htm">
+        <button class="btn primary" type="submit">Завантажити й розібрати</button>
+        <p class="muted tiny" style="margin: 10px 0 0">
+          Витяг тексту зараз працює для <span class="mono">.txt</span> і
+          <span class="mono">.md</span>. PDF / DOCX / EPUB — етап 2 плану.
+        </p>
+      </form>
+    </div>
+  </section>
+
+  <h3 class="sec-title">Документи</h3>
+  <section class="card">
+    {% if rows %}
+      <table>
+        <thead>
+          <tr>
+            <th>Назва</th>
+            <th>Блоків</th>
+            <th>Завантажено</th>
+            <th>Стан</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            {% set doc = row.document %}
+            <tr>
+              <td>
+                <div class="name">{{ doc.filename }}</div>
+                <div class="tiny muted mono">{{ doc.source_path.split('/')[-1] }}</div>
+              </td>
+              <td>{{ row.blocks }}</td>
+              <td class="tiny muted">{{ doc.created_at.strftime('%d.%m.%Y %H:%M') }}</td>
+              <td>
+                {% if doc.status == 'ready' %}
+                  <span class="chip ok">{{ document_status_label(doc.status) }}</span>
+                {% elif doc.status == 'error' %}
+                  <span class="chip err">{{ document_status_label(doc.status) }}</span>
+                {% else %}
+                  <span class="chip">{{ document_status_label(doc.status) }}</span>
+                {% endif %}
+              </td>
+              <td class="right">
+                {% if doc.status == 'ready' %}
+                  <a class="btn sm primary" href="/documents/{{ doc.id }}">Відкрити</a>
+                {% else %}
+                  <span class="btn sm" aria-disabled="true">Відкрити</span>
+                {% endif %}
+                <form method="post" action="/ui/documents/{{ doc.id }}/delete" class="inline"
+                      onsubmit="return confirm('Видалити «{{ doc.filename }}» разом із блоками?');">
+                  <button class="btn sm ghost" type="submit">Видалити</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="bd empty">
+        <b>Ще немає жодного документа.</b>
+        <p class="muted tiny" style="margin: 6px 0 0">
+          Оберіть <span class="mono">.txt</span> або <span class="mono">.md</span>
+          вище — і за кілька секунд побачите текст, розбитий на блоки.
+        </p>
+      </div>
+    {% endif %}
+  </section>
+
+  <h3 class="sec-title">
+    Черга синтезу
+    <span class="chip line tiny">паралельно: {{ health.synth_concurrency }}</span>
+  </h3>
+  <section class="card">
+    <div class="bd">
+      {% include "partials/job_strip.html" %}
+    </div>
+  </section>
+
+  <h3 class="sec-title">Що вже працює</h3>
+  <section class="card">
+    <div class="bd">
+      <ul class="phases">
+        <li class="done">
+          <b>F0 · фундамент</b> — завантаження з браузера, перегляд блоків,
+          режими тексту, стан системи.
+        </li>
+        <li>
+          <b>F1 · редактор</b> — правка блоків, емоції, прев'ю одного блоку
+          (наступний крок).
+        </li>
+        <li>
+          <b>F2 · синтез і черга</b> — запуск озвучення, прогрес через SSE,
+          скасування, завантаження MP3.
+        </li>
+      </ul>
+      <p class="tiny muted" style="margin: 0">
+        Повний перелік операцій і фаз — у <span class="mono">docs/FRONTEND.md</span>.
+      </p>
+    </div>
+  </section>
+{% endblock %}

@@ -13,8 +13,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -22,7 +23,11 @@ from sqlmodel import Session, select
 from app.config import get_settings
 from app.db import get_engine
 from app.models import (
-    Block, Document, Job, JobStatus, Segment, SegmentStatus,
+    Block,
+    Job,
+    JobStatus,
+    Segment,
+    SegmentStatus,
 )
 from app.services.audio.assemble import build_audio
 from app.services.expression.profiles import get_prosody
@@ -73,10 +78,10 @@ def unsubscribe_job(job_id: int, q: asyncio.Queue) -> None:
 
 async def _broadcast(job_id: int, event: dict) -> None:
     for q in list(_subscribers.get(job_id, [])):
-        try:
+        # Повільний клієнт: черга переповнена — пропускаємо подію,
+        # а не блокуємо синтез.
+        with contextlib.suppress(asyncio.QueueFull):
             q.put_nowait(event)
-        except asyncio.QueueFull:
-            pass  # повільний клієнт — пропускаємо подію
 
 
 # ── Воркер ─────────────────────────────────────────────────────────────────────
@@ -126,7 +131,7 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
         # Завантажуємо блоки документа
         blocks = session.exec(
             select(Block)
-            .where(Block.document_id == job.document_id, Block.speak == True)
+            .where(Block.document_id == job.document_id, Block.speak.is_(True))
             .order_by(Block.ordinal)
         ).all()
 
@@ -276,7 +281,7 @@ async def _process_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
 
 def _start_job(session: Session, job: Job) -> None:
     job.status = JobStatus.RUNNING
-    job.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    job.started_at = datetime.now(UTC).replace(tzinfo=None)
     session.add(job)
     session.commit()
 
@@ -285,7 +290,7 @@ def _finish_job(session: Session, job: Job, status: JobStatus, error: str = "") 
     job.status = status
     job.error = error
     job.progress = 1.0 if status == JobStatus.DONE else job.progress
-    job.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    job.finished_at = datetime.now(UTC).replace(tzinfo=None)
     session.add(job)
     session.commit()
 
@@ -299,7 +304,7 @@ async def cancel_job(job_id: int) -> bool:
         if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
             return False
         job.status = JobStatus.CANCELLED
-        job.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        job.finished_at = datetime.now(UTC).replace(tzinfo=None)
         session.add(job)
         session.commit()
 

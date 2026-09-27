@@ -10,7 +10,6 @@ from pathlib import Path
 
 from app.models import Block, BlockKind
 
-
 # ── TXT ────────────────────────────────────────────────────────────────────────
 
 _ENCODING_CHAIN = ("utf-8", "cp1251", "latin-1")

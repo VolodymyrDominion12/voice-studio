@@ -1,0 +1,21 @@
+{# Повідомлення після дії (flash) і помилка форми. #}
+{% if flash %}
+  <div class="alert {{ flash[1] }}" role="status">
+    {{ flash[0] }}
+  </div>
+{% endif %}
+{% if error %}
+  <div class="alert err" role="alert">
+    <b>Не вдалося:</b> {{ error }}
+    {% if error_status == 415 %}
+      <div class="tiny">Дозволені формати: <span class="mono">{{ health.allowed_extensions }}</span></div>
+    {% elif error_status == 413 %}
+      <div class="tiny">Ліміт задається змінною <span class="mono">MAX_UPLOAD_MB</span>.</div>
+    {% elif error_status == 422 %}
+      <div class="tiny">
+        Витяг тексту з PDF/DOCX/EPUB — етап 2 плану
+        (<span class="mono">docs/PLAN.md</span>).
+      </div>
+    {% endif %}
+  </div>
+{% endif %}

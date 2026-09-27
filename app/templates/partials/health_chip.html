@@ -1,0 +1,17 @@
+{#
+  Чип стану системи. Джерело — app/services/system.py::health_snapshot().
+  Свідомо НЕ пробує TTS-шлюз: перевірка мережі на кожному рендері сторінки
+  була б і повільною, і оманливою (docs/FRONTEND.md, розділ 16.1).
+#}
+{% if health.status == 'ok' %}
+  <span class="chip ok" title="Дані: {{ health.data_dir }}">
+    ● система готова
+  </span>
+{% else %}
+  <span class="chip err">● стан невідомий</span>
+{% endif %}
+{% if health.data_dir_writable %}
+  <span class="chip line tiny">тека даних: запис дозволено</span>
+{% else %}
+  <span class="chip err tiny">тека даних недоступна для запису</span>
+{% endif %}

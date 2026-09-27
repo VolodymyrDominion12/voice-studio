@@ -1,0 +1,89 @@
+{% extends "layout/base.html" %}
+{% block title %}{{ document.filename }} — Voice Studio{% endblock %}
+
+{% block content %}
+  <section class="card doc-head">
+    <div class="hd">
+      <a class="btn sm ghost" href="/">← Документи</a>
+      <h2>{{ document.filename }}</h2>
+      {% if document.status == 'ready' %}
+        <span class="chip ok">{{ document_status_label(document.status) }}</span>
+      {% else %}
+        <span class="chip">{{ document_status_label(document.status) }}</span>
+      {% endif %}
+      <span class="sp"></span>
+      <form method="post" action="/ui/documents/{{ document.id }}/normalize" class="inline">
+        <button class="btn sm" type="submit"
+                title="Перезапустити нормалізацію. Ваш відредагований текст не змінюється.">
+          ↻ Перенормалізувати
+        </button>
+      </form>
+      <form method="post" action="/ui/documents/{{ document.id }}/delete" class="inline"
+            onsubmit="return confirm('Видалити «{{ document.filename }}» разом із блоками?');">
+        <button class="btn sm ghost" type="submit">Видалити</button>
+      </form>
+    </div>
+    <div class="bd">
+      <div class="stats">
+        <span><b>{{ stats.blocks }}</b> блоків</span>
+        <span><b>{{ stats.speakable }}</b> до озвучення</span>
+        {% if stats.edited %}
+          <span><b>{{ stats.edited }}</b> відредаговано вручну</span>
+        {% endif %}
+        <span title="Оцінка за символами, а не вимір">аудіо {{ stats.estimate }}</span>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="Режим тексту">
+        <a class="tab {% if mode == 'raw' %}on{% endif %}" href="?mode=raw">Вихідний</a>
+        <a class="tab {% if mode == 'normalized' %}on{% endif %}" href="?mode=normalized">Нормалізований</a>
+        <a class="tab {% if mode == 'effective' %}on{% endif %}" href="?mode=effective">Мій</a>
+      </div>
+      <p class="tiny muted" style="margin: 8px 0 0">
+        «Мій» — те, що реально піде в синтез: ваш текст, якщо він є, інакше
+        нормалізований, інакше вихідний.
+      </p>
+    </div>
+  </section>
+
+  <section class="card notice-card">
+    <div class="bd">
+      <b>Це перегляд (фаза F0).</b>
+      <span class="tiny muted">
+        Правка тексту, вибір емоції та прослуховування блоку зʼявляться у фазі F1;
+        запуск озвучення всього документа — у F2. Просодія нижче порахована
+        наперед — вона показує, що саме станеться при синтезі.
+      </span>
+    </div>
+  </section>
+
+  {% if views %}
+    <div class="blocks">
+      {% for view in views %}
+        {% include "partials/block_row.html" %}
+      {% endfor %}
+    </div>
+  {% else %}
+    <section class="card">
+      <div class="bd empty">
+        <b>У цьому документі немає блоків.</b>
+        <p class="muted tiny" style="margin: 6px 0 0">
+          Файл порожній або текст не вдалося витягти.
+        </p>
+      </div>
+    </section>
+  {% endif %}
+
+  {% if has_prev or has_next %}
+    <nav class="pager">
+      {% if has_prev %}
+        <a class="btn sm" href="?mode={{ mode }}&offset={{ prev_offset }}">← Попередні</a>
+      {% endif %}
+      <span class="tiny muted">
+        блоки {{ offset + 1 }}–{{ offset + views | length }} з {{ total }}
+      </span>
+      {% if has_next %}
+        <a class="btn sm" href="?mode={{ mode }}&offset={{ next_offset }}">Наступні →</a>
+      {% endif %}
+    </nav>
+  {% endif %}
+{% endblock %}

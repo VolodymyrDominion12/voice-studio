@@ -5,6 +5,11 @@ data/voices/
 data/models/
 *.db
 *.sqlite3
+# WAL-журнал і спільна памʼять SQLite — теж артефакти виконання.
+# Без цих рядків `*.sqlite3-wal` / `-shm` потрапляли під контроль версій,
+# бо маска `*.sqlite3` їх не покриває.
+*.sqlite3-wal
+*.sqlite3-shm
 *.db-wal
 *.db-shm
 

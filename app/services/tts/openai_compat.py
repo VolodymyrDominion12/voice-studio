@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 
 from app.config import get_settings
-from app.services.tts.base import EngineCapabilities, SynthRequest, TTSEngine, Voice
+from app.services.tts.base import EngineCapabilities, SynthRequest, Voice
 
 logger = logging.getLogger(__name__)
 

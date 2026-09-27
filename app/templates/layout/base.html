@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+{#
+  Каркас усіх сторінок (ADR-008: серверний рендеринг, без кроку збірки).
+
+  htmx і Alpine поки НЕ підключені: сторінки фази F0 працюють на звичайних
+  формах і посиланнях, тож тягнути ~60 КБ JS заради нічого не варто. Вони
+  зʼявляться у F1 разом із редактором блоків — для цього вже є блок `scripts`.
+#}
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Voice Studio{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">
+      <span class="dot"></span>
+      <span>
+        <b>Voice Studio</b>
+        <small>локальне озвучення</small>
+      </span>
+    </a>
+    <nav class="nav">
+      <a href="/" {% if active_nav == 'workspace' %}class="on"{% endif %}>Робоча стола</a>
+      <a href="/settings" {% if active_nav == 'settings' %}class="on"{% endif %}>Система</a>
+    </nav>
+    <div class="top-right">
+      {% include "partials/health_chip.html" %}
+    </div>
+  </header>
+
+  <main class="wrap">
+    {% include "partials/flash.html" %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="foot">
+    <span>Фаза F0 — завантаження й перегляд. Концепція: <span class="mono">docs/FRONTEND.md</span></span>
+    <span class="mono">{{ health.version }}</span>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

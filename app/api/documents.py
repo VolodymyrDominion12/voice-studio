@@ -1,61 +1,84 @@
 """API-роутер: документи та блоки.
 
-POST /api/v1/documents      — завантажити файл
-GET  /api/v1/documents      — список
-GET  /api/v1/documents/{id} — документ із блоками
-PATCH /api/v1/documents/{id}/blocks/{bid} — оновити текст/емоцію
-POST /api/v1/documents/{id}/normalize     — перезапустити нормалізацію
+POST   /api/v1/documents                   — завантажити файл
+GET    /api/v1/documents                   — список
+GET    /api/v1/documents/{id}              — документ із блоками
+PATCH  /api/v1/documents/{id}/blocks/{bid} — оновити текст/емоцію блоку
+PATCH  /api/v1/documents/{id}/blocks       — масова правка блоків
+POST   /api/v1/documents/{id}/normalize    — перезапустити нормалізацію
+DELETE /api/v1/documents/{id}              — видалити документ
+
+Логіка живе в app/services/library/ — цей файл лише розбирає запит,
+перекладає помилки сервісу в HTTP-коди й серіалізує відповідь.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import shutil
-from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlmodel import Session, select
+from pydantic import BaseModel
+from sqlmodel import Session
 
-from app.config import get_settings
 from app.db import get_session
-from app.models import (
-    Block, BlockUpdate, BlockRead,
-    Document, DocumentRead, DocumentStatus, DocumentWithBlocks,
+from app.models import BlockRead, BlockUpdate, DocumentRead, DocumentWithBlocks
+from app.services.library import blocks as blocks_service
+from app.services.library import documents as library
+from app.services.library.documents import DocumentResult
+from app.services.library.errors import (
+    BlockNotFoundError,
+    DocumentNotFoundError,
+    ExtractorUnavailableError,
+    UnsupportedFormatError,
+    UploadTooLargeError,
 )
-from app.services.extraction.txt import extract_text_file
-from app.services.normalize.uk import normalize
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 
-
-# ── Допоміжні функції ──────────────────────────────────────────────────────────
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _mime_from_suffix(suffix: str) -> str:
-    return {
-        ".txt":      "text/plain",
-        ".md":       "text/markdown",
-        ".markdown": "text/markdown",
-        ".pdf":      "application/pdf",
-        ".docx":     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ".epub":     "application/epub+zip",
-        ".html":     "text/html",
-        ".htm":      "text/html",
-    }.get(suffix.lower(), "application/octet-stream")
+# Помилка сервісу → статус-код. Порядок не важливий: типи не перетинаються.
+_STATUS_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
+    (UnsupportedFormatError, 415),
+    (UploadTooLargeError, 413),
+    (ExtractorUnavailableError, 422),
+    (DocumentNotFoundError, 404),
+    (BlockNotFoundError, 404),
+)
 
 
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+# ── Допоміжні функції ─────────────────────────────────────────────────────────
+
+def _to_response(result: DocumentResult) -> DocumentWithBlocks:
+    """DocumentResult → схема відповіді."""
+    return DocumentWithBlocks.model_validate(
+        result.document,
+        update={"blocks": [BlockRead.model_validate(b) for b in result.blocks]},
+    )
+
+
+def _http_error(exc: Exception) -> HTTPException:
+    """Перекласти помилку сервісу в HTTPException.
+
+    Невідомі помилки не ковтаємо: вони мають стати 500 і потрапити в лог,
+    а не вдавати помилку користувача.
+    """
+    for error_type, status in _STATUS_BY_ERROR:
+        if isinstance(exc, error_type):
+            return HTTPException(status_code=status, detail=str(exc))
+    logger.exception("Непередбачена помилка сервісу бібліотеки")
+    raise exc
+
+
+# ── Схеми масової правки ──────────────────────────────────────────────────────
+
+class BlockBatchItem(BlockUpdate):
+    """Елемент масової правки: який блок і що в ньому змінити."""
+    block_id: int
+
+
+class BlockBatchUpdate(BaseModel):
+    """Тіло масової правки блоків."""
+    updates: list[BlockBatchItem]
 
 
 # ── Ендпоінти ─────────────────────────────────────────────────────────────────
@@ -65,100 +88,32 @@ async def upload_document(
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
-    """Завантажити файл і витягти блоки тексту."""
-    settings = get_settings()
-    suffix = Path(file.filename or "").suffix.lower()
+    """Завантажити файл і витягти блоки тексту.
 
-    if suffix not in settings.allowed_suffixes:
-        raise HTTPException(
-            status_code=415,
-            detail=f"Формат {suffix!r} не підтримується. Дозволено: {settings.allowed_extensions}",
-        )
-
-    # Зберегти файл
-    settings.uploads_dir.mkdir(parents=True, exist_ok=True)
-    dest = settings.uploads_dir / (file.filename or "upload")
-    with dest.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
-
-    sha = _sha256(dest)
-
-    # Перевірка дублікату
-    existing = session.exec(select(Document).where(Document.sha256 == sha)).first()
-    if existing:
-        blocks = session.exec(select(Block).where(Block.document_id == existing.id)).all()
-        return DocumentWithBlocks.model_validate(existing, update={"blocks": [BlockRead.model_validate(b) for b in blocks]})
-
-    # Створити запис документа
-    doc = Document(
-        filename=file.filename or dest.name,
-        sha256=sha,
-        mime=_mime_from_suffix(suffix),
-        source_path=str(dest),
-        status=DocumentStatus.EXTRACTING,
-    )
-    session.add(doc)
-    session.commit()
-    session.refresh(doc)
-
-    # Витяг блоків
+    Повторне завантаження того самого файлу (за sha256) повертає наявний
+    документ, а не створює дубль.
+    """
     try:
-        raw_blocks = _extract_blocks(dest, suffix)
+        result = library.create_from_upload(session, file.filename or "", file.file)
     except Exception as exc:
-        doc.status = DocumentStatus.ERROR
-        session.add(doc)
-        session.commit()
-        raise HTTPException(status_code=422, detail=f"Помилка витягу тексту: {exc}") from exc
-
-    # Нормалізація і збереження
-    db_blocks: list[Block] = []
-    for b in raw_blocks:
-        b.document_id = doc.id
-        b.text_normalized = normalize(b.text_raw) if b.speak else ""
-        session.add(b)
-        db_blocks.append(b)
-
-    doc.status = DocumentStatus.READY
-    doc.updated_at = _now_utc()
-    session.add(doc)
-    session.commit()
-    session.refresh(doc)
-
-    logger.info("Документ %d створено: %d блоків із %s", doc.id, len(db_blocks), file.filename)
-    block_reads = [BlockRead.model_validate(b) for b in db_blocks]
-    return DocumentWithBlocks.model_validate(doc, update={"blocks": block_reads})
-
-
-def _extract_blocks(path: Path, suffix: str) -> list[Block]:
-    """Вибрати екстрактор за розширенням."""
-    if suffix in (".txt", ".md", ".markdown"):
-        return extract_text_file(path)
-    # PDF, EPUB, DOCX — планується в Етапі 2 (markitdown/PyMuPDF)
-    raise NotImplementedError(
-        f"Екстрактор для {suffix!r} ще не реалізований (заплановано в Етапі 2). "
-        "Завантажте .txt або .md файл."
-    )
+        raise _http_error(exc) from exc
+    return _to_response(result)
 
 
 @router.get("", response_model=list[DocumentRead])
 def list_documents(session: Session = Depends(get_session)):
     """Список усіх документів (без блоків)."""
-    docs = session.exec(select(Document).order_by(Document.created_at.desc())).all()
-    return [DocumentRead.model_validate(d) for d in docs]
+    return [DocumentRead.model_validate(d) for d in library.list_documents(session)]
 
 
 @router.get("/{doc_id}", response_model=DocumentWithBlocks)
 def get_document(doc_id: int, session: Session = Depends(get_session)):
     """Документ із усіма блоками."""
-    doc = session.get(Document, doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Документ не знайдено")
-    blocks = session.exec(
-        select(Block).where(Block.document_id == doc_id).order_by(Block.ordinal)
-    ).all()
-    return DocumentWithBlocks.model_validate(
-        doc, update={"blocks": [BlockRead.model_validate(b) for b in blocks]}
-    )
+    try:
+        result = library.get_document_with_blocks(session, doc_id)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+    return _to_response(result)
 
 
 @router.patch("/{doc_id}/blocks/{block_id}", response_model=BlockRead)
@@ -169,38 +124,54 @@ def update_block(
     session: Session = Depends(get_session),
 ):
     """Оновити текст, емоцію або speak-прапорець блоку."""
-    block = session.get(Block, block_id)
-    if not block or block.document_id != doc_id:
-        raise HTTPException(status_code=404, detail="Блок не знайдено")
-
-    data = update.model_dump(exclude_unset=True)
-    for key, value in data.items():
-        setattr(block, key, value)
-
-    session.add(block)
-    session.commit()
-    session.refresh(block)
+    try:
+        block = blocks_service.update_block(
+            session, doc_id, block_id, update.model_dump(exclude_unset=True)
+        )
+    except Exception as exc:
+        raise _http_error(exc) from exc
     return BlockRead.model_validate(block)
+
+
+@router.patch("/{doc_id}/blocks", response_model=list[BlockRead])
+def update_blocks(
+    doc_id: int,
+    payload: BlockBatchUpdate,
+    session: Session = Depends(get_session),
+):
+    """Масова правка блоків однією транзакцією.
+
+    Потрібна редактору для розмітки емоцій на багатьох блоках одразу
+    (docs/FRONTEND.md, знахідка 16.5).
+    """
+    if not payload.updates:
+        raise HTTPException(status_code=422, detail="Порожній список updates")
+
+    changes = [
+        {"block_id": item.block_id, **item.model_dump(exclude_unset=True, exclude={"block_id"})}
+        for item in payload.updates
+    ]
+    try:
+        updated = blocks_service.update_blocks(session, doc_id, changes)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+    return [BlockRead.model_validate(b) for b in updated]
 
 
 @router.post("/{doc_id}/normalize", response_model=DocumentWithBlocks)
 def renormalize_document(doc_id: int, session: Session = Depends(get_session)):
     """Перезапустити нормалізацію для всіх блоків документа."""
-    doc = session.get(Document, doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Документ не знайдено")
+    try:
+        result = library.renormalize(session, doc_id)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+    return _to_response(result)
 
-    blocks = session.exec(
-        select(Block).where(Block.document_id == doc_id)
-    ).all()
 
-    for block in blocks:
-        if block.speak:
-            block.text_normalized = normalize(block.text_raw)
-            session.add(block)
-
-    doc.updated_at = _now_utc()
-    session.add(doc)
-    session.commit()
-
-    return get_document(doc_id, session)
+@router.delete("/{doc_id}", status_code=204)
+def delete_document(doc_id: int, session: Session = Depends(get_session)):
+    """Видалити документ разом із блоками та вихідним файлом."""
+    try:
+        library.delete_document(session, doc_id)
+    except Exception as exc:
+        raise _http_error(exc) from exc

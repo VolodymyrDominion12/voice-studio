@@ -1,0 +1,14 @@
+{% extends "layout/base.html" %}
+{% block title %}Документ не знайдено — Voice Studio{% endblock %}
+
+{% block content %}
+  <section class="card">
+    <div class="bd empty">
+      <b>Документ {{ doc_id }} не знайдено.</b>
+      <p class="muted tiny" style="margin: 6px 0 12px">
+        Його могли видалити — або посилання зістарілося.
+      </p>
+      <a class="btn primary" href="/">До списку документів</a>
+    </div>
+  </section>
+{% endblock %}

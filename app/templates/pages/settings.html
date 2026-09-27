@@ -1,0 +1,111 @@
+{% extends "layout/base.html" %}
+{% block title %}Система — Voice Studio{% endblock %}
+
+{% block content %}
+  <h3 class="sec-title">Стан системи</h3>
+  <div class="grid2">
+    <section class="card">
+      <div class="hd"><h2>Застосунок</h2></div>
+      <div class="bd">
+        <dl class="kv">
+          <dt>Версія</dt><dd>{{ health.version }}</dd>
+          <dt>Тека даних</dt><dd class="mono">{{ health.data_dir }}</dd>
+          <dt>Запис у теку</dt>
+          <dd>
+            {% if health.data_dir_writable %}
+              <span class="chip ok tiny">дозволено</span>
+            {% else %}
+              <span class="chip err tiny">заборонено</span>
+            {% endif %}
+          </dd>
+          <dt>Дозволені формати</dt><dd class="mono">{{ health.allowed_extensions }}</dd>
+          <dt>Ліміт файлу</dt><dd>{{ health.max_upload_mb }} МБ</dd>
+        </dl>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="hd"><h2>Синтез</h2></div>
+      <div class="bd">
+        <dl class="kv">
+          <dt>TTS-шлюз</dt><dd class="mono">{{ health.tts_base_url }}</dd>
+          <dt>Рушій за замовчуванням</dt><dd class="mono">{{ health.default_engine }}</dd>
+          <dt>Голос за замовчуванням</dt><dd class="mono">{{ health.default_voice }}</dd>
+          <dt>Паралельних синтезів</dt><dd>{{ health.synth_concurrency }}</dd>
+          <dt>Цільова гучність</dt><dd>{{ health.target_lufs }} LUFS</dd>
+          <dt>Частота</dt><dd>{{ health.target_sample_rate }} Гц</dd>
+          <dt>Макс. символів у сегменті</dt><dd>{{ health.segment_max_chars }}</dd>
+          <dt>Зсув тону (DSP)</dt>
+          <dd>
+            {% if health.enable_pitch_shift %}
+              увімкнено
+            {% else %}
+              вимкнено <span class="tiny muted">(ADR-004: типово й навмисно)</span>
+            {% endif %}
+          </dd>
+        </dl>
+        <p class="tiny muted" style="margin: 10px 0 0">
+          Проба шлюзу тут навмисно відсутня: перевірка мережі на кожному
+          рендері сторінки була б повільною. Окремий пробник — у планах
+          (<span class="mono">docs/FRONTEND.md</span>, знахідка 16.1).
+        </p>
+      </div>
+    </section>
+  </div>
+
+  <h3 class="sec-title">
+    Що робить кожна емоція
+    <span class="chip line tiny">керована просодія, а не гра моделі</span>
+  </h3>
+  <section class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Емоція</th><th>Темп</th><th>Тон</th>
+          <th>Гучність</th><th>Пауза після</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for name in emotion_order %}
+          {% set profile = profiles.get(name) %}
+          {% if profile %}
+            <tr>
+              <td>{{ emotion_icon(name) }} {{ emotion_label(name) }}
+                <span class="mono tiny muted">{{ name }}</span></td>
+              <td class="mono">{{ '%.2f' % profile.speed }}×</td>
+              <td class="mono">{{ '%+.1f' % profile.pitch }}</td>
+              <td class="mono">{{ '%+.0f' % profile.energy_db }} дБ</td>
+              <td class="mono">{{ profile.pause_after_ms }} мс</td>
+            </tr>
+          {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="bd">
+      <p class="tiny muted" style="margin: 0">
+        Значення — відхилення від <span class="mono">neutral</span> при
+        інтенсивності 1.0. Інтенсивність масштабує відхилення лінійно:
+        0 = нейтрально, 1 = повний профіль. Джерело —
+        <span class="mono">app/services/expression/profiles.py</span>,
+        ендпоінт <span class="mono">GET /api/v1/emotions</span>.
+      </p>
+    </div>
+  </section>
+
+  <h3 class="sec-title">Стан фаз</h3>
+  <section class="card">
+    <div class="bd">
+      <ul class="phases">
+        <li class="done"><b>F0 · фундамент</b> — цей інтерфейс.</li>
+        <li><b>F1 · редактор</b> — правка блоків, емоції, прев'ю блоку.</li>
+        <li><b>F2 · синтез і черга</b> — озвучення, SSE-прогрес, завантаження.</li>
+        <li><b>F3 · масштаб</b> — масові дії, пошук, сегментний плеєр.</li>
+        <li><b>F4</b> — PDF/DOCX, M4B, зразки голосів (після етапів 2–3 бекенду).</li>
+      </ul>
+      <p class="tiny muted" style="margin: 10px 0 0">
+        Перелік операцій, яких ще бракує в API, — розділ 16 у
+        <span class="mono">docs/FRONTEND.md</span>.
+      </p>
+    </div>
+  </section>
+{% endblock %}

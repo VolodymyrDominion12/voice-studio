@@ -83,6 +83,16 @@ class Settings(BaseSettings):
             if s.strip()
         }
 
+    @property
+    def templates_dir(self) -> Path:
+        """Тека Jinja2-шаблонів (HTML-інтерфейс, ADR-008)."""
+        return PROJECT_ROOT / "app" / "templates"
+
+    @property
+    def static_dir(self) -> Path:
+        """Тека статики (css; згодом — htmx і Alpine)."""
+        return PROJECT_ROOT / "app" / "static"
+
     def ensure_dirs(self) -> None:
         for d in (self.data_dir, self.model_dir, self.uploads_dir,
                   self.renders_dir, self.voices_dir):
