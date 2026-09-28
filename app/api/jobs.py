@@ -22,8 +22,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlmodel import Session, select
 
+from app.config import get_settings
 from app.db import get_session
 from app.models import Document, Job, JobCreate, JobRead, JobStatus, Segment
+from app.services.audio.assemble import normalize_formats, primary_format
 from app.services.library import documents as library
 from app.services.library.errors import DocumentNotFoundError
 from app.worker.queue import cancel_job, enqueue_job, subscribe_job, unsubscribe_job
@@ -99,6 +101,15 @@ def create_job(payload: JobCreate, session: Session = Depends(get_session)):
         return _job_read(existing, session)
 
     options = dict(payload.options)
+    try:
+        # Невідомий формат — це 422 одразу, а не «завдання виконалось, а файлу
+        # такого немає»: користувач дізнається про помилку до синтезу книги.
+        options["formats"] = list(
+            normalize_formats(options.get("formats"), default=get_settings().output_format_list)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     if payload.client_token:
         options["client_token"] = payload.client_token
 
@@ -287,6 +298,22 @@ async def cancel_job_endpoint(job_id: int, session: Session = Depends(get_sessio
     return {"job_id": job_id, "status": "cancelled"}
 
 
+def _job_artifacts(job: Job) -> dict[str, str]:
+    """Файли, які реально створила збірка: «формат → шлях».
+
+    Головний файл (`output_path`) додаємо самі: старі завдання, створені до
+    появи переліку, не мають `artifacts`, і вони мають лишатися завантажуваними.
+    """
+    artifacts = {
+        str(name): str(path)
+        for name, path in (job.options_json or {}).get("artifacts", {}).items()
+        if path
+    }
+    if job.output_path and not artifacts:
+        artifacts[Path(job.output_path).suffix.lower().lstrip(".")] = job.output_path
+    return artifacts
+
+
 @router.get("/{job_id}/download")
 def download_result(
     job_id: int,
@@ -295,11 +322,12 @@ def download_result(
 ):
     """Завантажити готовий результат синтезу.
 
-    `format` більше не «перемикає» формат: `build_audio` створює один файл, і
-    раніше параметр змінював лише `Content-Type`, через що `?format=wav`
-    віддавав MP3 із заголовком `audio/wav` (docs/FRONTEND.md, знахідка 16.3).
-    Тепер явно вказаний формат, що не збігається з реальним файлом, — це
-    честна помилка 409, а не підміна заголовка.
+    `format` обирає ОДИН із реально створених файлів завдання. Раніше параметр
+    змінював лише `Content-Type`, через що `?format=wav` віддавав MP3 із
+    заголовком `audio/wav`; потім — давав 409, бо конвертації не було
+    (docs/FRONTEND.md, знахідка 16.3). Тепер формати створюються на етапі
+    збірки (`options.formats`), тож запитати можна саме той, який існує, а
+    відсутній дає 404 зі списком доступних.
     """
     job = session.get(Job, job_id)
     if not job:
@@ -310,24 +338,32 @@ def download_result(
             detail=f"Завдання ще не завершено (статус: {job.status!r})",
         )
 
-    output = Path(job.output_path)
-    if not output.is_file():
-        raise HTTPException(status_code=404, detail="Файл результату не знайдено")
+    artifacts = _job_artifacts(job)
+    available = sorted(artifacts)
 
-    actual = output.suffix.lower()
     if format:
         requested = format.lower().lstrip(".")
-        if requested != actual.lstrip("."):
+        if requested not in artifacts:
             raise HTTPException(
-                status_code=409,
+                status_code=404,
                 detail=(
-                    f"Завдання створило файл {actual}; конвертації в {format!r} "
-                    "немає — завантажте наявний формат."
+                    f"Завдання не створило файл формату {requested!r}. "
+                    f"Доступні: {', '.join(available) or 'жодного'}. "
+                    "Формати задаються при створенні завдання (options.formats)."
                 ),
             )
+        chosen = Path(artifacts[requested])
+    else:
+        # Без параметра віддаємо головний файл: MP3, якщо він є, інакше M4B/WAV.
+        primary = primary_format(tuple(available))
+        chosen = Path(artifacts[primary]) if primary in artifacts else Path(job.output_path)
 
+    if not chosen.is_file():
+        raise HTTPException(status_code=404, detail="Файл результату не знайдено на диску")
+
+    suffix = chosen.suffix.lower()
     return FileResponse(
-        path=str(output),
-        media_type=_MEDIA_TYPES.get(actual, "application/octet-stream"),
-        filename=output.name,
+        path=str(chosen),
+        media_type=_MEDIA_TYPES.get(suffix, "application/octet-stream"),
+        filename=chosen.name,
     )

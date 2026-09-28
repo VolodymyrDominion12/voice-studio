@@ -80,11 +80,24 @@ FLASH_MESSAGES: dict[str, tuple[str, str]] = {
         "Немає жодного озвучуваного блоку з непорожнім текстом — синтезувати нічого.",
         "warn",
     ),
+    "bad_format": (
+        "Невідомий формат результату — завдання не створено. "
+        "Доступні: MP3, M4B, WAV (і zip по розділах).",
+        "err",
+    ),
 }
 
 EMOTION_ORDER = (
     "neutral", "warm", "serious", "joyful",
     "excited", "sad", "tense", "questioning",
+)
+
+# Вибір результату в редакторі. Порядок — від найпотрібнішого: MP3 слухають
+# усюди, M4B — формат аудіокниги з розділами, WAV — для подальшої обробки.
+FORMAT_CHOICES: tuple[tuple[str, str, str], ...] = (
+    ("mp3", "MP3", "Слухається будь-де. Найменший файл."),
+    ("m4b", "M4B", "Формат аудіокниги: розділи з заголовків, метадані, переходи в плейері."),
+    ("wav", "WAV", "Без втрат — для монтажу. Файл великий."),
 )
 
 
@@ -287,6 +300,8 @@ def _editor_context(
         "presets": presets_service.list_presets(session),
         "selected_preset": selected_preset,
         "compact": compact,
+        "format_choices": FORMAT_CHOICES,
+        "default_formats": get_settings().output_format_list,
         "flash": flash,
     }
 
@@ -668,6 +683,7 @@ def _job_view(job: Job, session: Session) -> dict:
         elapsed_ms = int((finished - job.started_at).total_seconds() * 1000)
 
     output = Path(job.output_path) if job.output_path else None
+    artifacts = _artifact_rows(job, output)
     return {
         "job": job,
         "document": document,
@@ -678,9 +694,42 @@ def _job_view(job: Job, session: Session) -> dict:
         "output_name": output.name if output else "",
         "output_format": output.suffix.lstrip(".").upper() if output else "",
         "output_size": output.stat().st_size if output and output.is_file() else 0,
+        "artifacts": artifacts,
+        "has_zip": any(row["format"] == "zip" for row in artifacts),
         "is_active": job.status in (JobStatus.QUEUED, JobStatus.RUNNING),
         "is_stalled": job.status == JobStatus.RUNNING and not job.started_at,
     }
+
+
+def _artifact_rows(job: Job, output: Path | None) -> list[dict]:
+    """Створені файли завдання — для списку завантажень на сторінці завдання.
+
+    Головний файл додаємо, якщо переліку немає (старі завдання): сторінка
+    завдання має показувати те, що реально лежить на диску, а не те, що
+    обіцяє `options_json`.
+    """
+    artifacts = {
+        str(name): str(path)
+        for name, path in (job.options_json or {}).get("artifacts", {}).items()
+        if path
+    }
+    if not artifacts and output:
+        artifacts[output.suffix.lower().lstrip(".")] = str(output)
+
+    rows = []
+    for name in sorted(artifacts, key=lambda item: (item == "zip", item)):
+        path = Path(artifacts[name])
+        rows.append(
+            {
+                "format": name,
+                "label": "ZIP · розділи" if name == "zip" else name.upper(),
+                "file_name": path.name,
+                "size": path.stat().st_size if path.is_file() else 0,
+                "exists": path.is_file(),
+                "url": f"/api/v1/jobs/{job.id}/download?format={name}",
+            }
+        )
+    return rows
 
 
 def _speakable_count(session: Session, document_id: int) -> int:
@@ -763,13 +812,20 @@ def create_job_from_editor(
     session: Session = Depends(get_session),
     voice: str = Form(""),
     engine: str = Form(""),
+    formats: list[str] = Form([]),
+    chapter_split: bool = Form(False),
 ):
     """«Озвучити все»: створити завдання і перейти на його сторінку.
 
     Поля форми звуться `voice` / `engine` — так само, як параметри сторінки
     редактора, бо кнопка надсилає ту саму форму через `formaction`.
     Перевірки (документ існує, є озвучувані блоки) — ті самі, що в JSON-API.
+
+    `formats` і `chapter_split` — вибір результату: MP3/WAV/M4B і zip із
+    файлами-розділами. Порожній вибір означає «як у налаштуваннях»
+    (`OUTPUT_FORMATS`), а не «жодного файлу».
     """
+    from app.services.audio.assemble import normalize_formats
     from app.services.library.blocks import count_speakable
     from app.worker.queue import enqueue_job
 
@@ -781,6 +837,16 @@ def create_job_from_editor(
     if count_speakable(result.blocks) == 0:
         return RedirectResponse(
             url=f"/documents/{doc_id}?flash=nothing_to_speak", status_code=303
+        )
+
+    try:
+        selected_formats = normalize_formats(
+            [item for item in formats if item], default=get_settings().output_format_list
+        )
+    except ValueError:
+        logger.warning("Завдання не створено: невідомий формат %s", formats)
+        return RedirectResponse(
+            url=f"/documents/{doc_id}?flash=bad_format", status_code=303
         )
 
     # Друге завдання на той самий документ нічого не додає, лише дублює
@@ -820,14 +886,22 @@ def create_job_from_editor(
         engine_id=selected_engine["id"],
         voice_id=selected_voice,
         status=JobStatus.QUEUED,
-        options_json={"created_from": "ui", "pause_ms": 400},
+        options_json={
+            "created_from": "ui",
+            "pause_ms": 400,
+            "formats": list(selected_formats),
+            "chapter_split": bool(chapter_split),
+        },
     )
     session.add(job)
     session.commit()
     session.refresh(job)
 
     enqueue_job(job.id)
-    logger.info("Завдання %s створено з інтерфейсу (doc=%s)", job.id, doc_id)
+    logger.info(
+        "Завдання %s створено з інтерфейсу (doc=%s, формати=%s, zip=%s)",
+        job.id, doc_id, ",".join(selected_formats), bool(chapter_split),
+    )
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 

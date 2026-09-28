@@ -51,6 +51,23 @@
       {% endif %}
     </div>
 
+    {% if view.artifacts | length > 1 %}
+      {# Кілька форматів — показуємо кожен окремим посиланням: /download без
+         параметра віддає головний (MP3), а решта доступні за ?format=. #}
+      <div class="stats" style="margin-top: 10px">
+        {% for row in view.artifacts %}
+          <span>
+            {% if row.exists %}
+              <a href="{{ row.url }}">⬇ {{ row.label }}</a>
+            {% else %}
+              <span class="muted">{{ row.label }} (файл зник)</span>
+            {% endif %}
+            <span class="tiny muted">{{ row.size | bytesize }}</span>
+          </span>
+        {% endfor %}
+      </div>
+    {% endif %}
+
     {% if job.error %}
       <div class="alert err" style="margin-top: 12px">
         <b>Завдання впало:</b> {{ job.error }}
@@ -99,12 +116,26 @@
       <dt>Пауза між блоками</dt><dd>{{ job.options_json.get('pause_ms', 400) }} мс</dd>
       <dt>Цільова гучність</dt><dd>{{ health.target_lufs }} LUFS</dd>
       <dt>Частота дискретизації</dt><dd>{{ health.target_sample_rate }} Гц</dd>
-      <dt>Формат результату</dt><dd>{{ view.output_format or '—' }}</dd>
+      <dt>Формати</dt>
+      <dd>
+        {% for row in view.artifacts %}{{ row.label }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}
+      </dd>
+      <dt>Розділи</dt>
+      <dd>
+        {% if view.has_zip %}
+          zip: окремий файл на кожен розділ
+        {% elif 'm4b' in job.options_json.get('formats', []) %}
+          мітки розділів усередині M4B (із заголовків документа)
+        {% else %}
+          не зберігались — виберіть M4B або zip на сторінці документа
+        {% endif %}
+      </dd>
       <dt>Рушій / голос</dt><dd>{{ job.engine_id }} / {{ job.voice_id }}</dd>
     </dl>
     <p class="tiny muted" style="margin: 10px 0 0">
-      Формат не вибирається: конвертації між форматами немає, тож завантаження
-      віддає саме той файл, який створила збірка (docs/FRONTEND.md, знахідка 16.3).
+      Формати задаються при створенні завдання (чекбокси біля «Озвучити все»)
+      і створюються однією збіркою — конвертації «на льоту» немає, тож
+      завантаження віддає саме той файл, який існує.
     </p>
   </div>
 </section>

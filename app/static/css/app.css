@@ -350,6 +350,18 @@ tbody tr:hover { background: var(--panel2); }
 .modes { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .checkbox { color: var(--muted); }
 
+/* Вибір результату (MP3/M4B/WAV + zip по розділах) у панелі редактора:
+   група виглядає як одне поле, а не як розсип чекбоксів у рядку. */
+.formats {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
 .bulkbar {
   background: var(--accent-soft);
   border: 1px solid var(--accent);
