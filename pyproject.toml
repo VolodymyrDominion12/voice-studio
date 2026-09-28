@@ -27,6 +27,10 @@ dependencies = [
     "lameenc>=1.7",
     "pyloudnorm>=0.1.1",
     "mutagen>=1.47",
+    # M4B/AAC із розділами (ADR-013). Це Python-колесо зі вбудованими
+    # бібліотеками FFmpeg: системний `ffmpeg` для нього НЕ потрібен, а саме
+    # його бракувало, щоб M4B був заблокований (PLAN, етап 2 → закрито).
+    "av>=14",
     "numpy>=1.26,<3",
 ]
 
@@ -43,10 +47,6 @@ piper = [
 # УВАГА: несумісний з `uk` — див. ADR-012 і [tool.uv].conflicts нижче.
 expressive = [
     "chatterbox-tts>=0.1.7",
-]
-# M4B/AAC та просунутий DSP — потребує нативного ffmpeg (не snap)
-m4b = [
-    "pydub>=0.25",
 ]
 dev = [
     "pytest>=8.3",

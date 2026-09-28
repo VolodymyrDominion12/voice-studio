@@ -90,6 +90,24 @@
 
       <span class="sp"></span>
 
+      {# Вибір результату. Чекбокси лежать у ЦІЙ САМІЙ формі, бо кнопка
+         «Озвучити все» надсилає її ж через formaction — так голос, рушій і
+         формати їдуть одним запитом. #}
+      <span class="formats" title="Які файли створити після синтезу">
+        {% for value, label, hint in format_choices %}
+          <label class="tiny checkbox" title="{{ hint }}">
+            <input type="checkbox" name="formats" value="{{ value }}"
+                   {% if value in default_formats %}checked{% endif %}>
+            {{ label }}
+          </label>
+        {% endfor %}
+        <label class="tiny checkbox"
+               title="Окремий MP3 на кожен розділ в одному zip-архіві">
+          <input type="checkbox" name="chapter_split" value="true">
+          zip по розділах
+        </label>
+      </span>
+
       {# formaction: та сама форма, але POST на створення завдання.
          Окрема форма тут неможлива — HTML не дозволяє вкладені форми. #}
       <button class="btn primary" type="submit" data-synth-all

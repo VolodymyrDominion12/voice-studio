@@ -24,15 +24,27 @@ from app.config import get_settings
 from app.db import get_engine
 from app.models import (
     Block,
+    BlockKind,
+    Document,
     Job,
     JobStatus,
     Segment,
     SegmentStatus,
     utc_now,
 )
-from app.services.audio.assemble import build_audio
+from app.services.audio.assemble import (
+    ChapterSpan,
+    build_audio,
+    normalize_formats,
+    primary_format,
+)
 from app.services.expression.profiles import get_prosody
 from app.services.library.blocks import block_effective_text
+from app.services.library.chapters import (
+    Chapter,
+    build_chapter_plan,
+    chapter_file_name,
+)
 from app.services.segment.splitter import split_sentences
 from app.services.tts.openai_compat import get_openai_compat_engine
 
@@ -51,6 +63,9 @@ class BlockTask:
     Потрібен тому, що синтез іде ПОЗА сесією: сесія закривається, а `commit()`
     у ній робить ORM-обʼєкти застарілими. Звернення до полів відʼєднаного
     обʼєкта падає з DetachedInstanceError, тож усе потрібне знімаємо заздалегідь.
+
+    `kind` і `heading_level` потрібні, щоб після синтезу знати межі розділів:
+    план розділів будується з тих самих блоків, що пішли в роботу.
     """
 
     id: int
@@ -58,6 +73,8 @@ class BlockTask:
     text: str
     emotion: str
     intensity: float
+    kind: BlockKind = BlockKind.PARAGRAPH
+    heading_level: int | None = None
 
 # ── SSE-брокер ─────────────────────────────────────────────────────────────────
 # job_id → список черг передплатників
@@ -233,9 +250,19 @@ async def _run_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
                 text=block_effective_text(block),
                 emotion=block.emotion,
                 intensity=block.intensity,
+                kind=block.kind,
+                heading_level=block.heading_level,
             )
             for block in blocks
         ]
+
+        document = session.get(Document, job.document_id)
+        document_title = ""
+        if document:
+            document_title = Path(document.filename).stem
+
+        # Налаштування збірки знімаємо з options_json, доки сесія відкрита
+        options = dict(job.options_json or {})
 
         # Прибираємо рядки сегментів попереднього прогону цього ж завдання.
         # Файли на диску НЕ чіпаємо — саме на них тримається ідемпотентність
@@ -263,6 +290,14 @@ async def _run_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
         len(split_sentences(task.text, max_chars=max_chars)) for task in tasks
     )
     done_count = 0
+
+    # ── Розділи ──────────────────────────────────────────────────────────────
+    # План будується з ТИХ САМИХ блоків, що пішли в синтез, тож його межі
+    # збігаються з межами аудіо. Далі лишається запам'ятати, які саме
+    # сегменти належать кожному розділу.
+    chapters = build_chapter_plan(tasks, document_title=document_title)
+    chapter_of_block = _map_blocks_to_chapters(tasks, chapters)
+    segments_by_chapter: dict[int, list[int]] = {}
 
     await _broadcast(job_id, {
         "event": "progress",
@@ -351,6 +386,12 @@ async def _run_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
             pauses_ms.append(prosody.pause_after_ms)
             energies_db.append(prosody.energy_db)
             segments_in_block += 1
+
+            # Запам'ятовуємо, до якого розділу належить сегмент
+            chapter_index = chapter_of_block.get(task.id)
+            if chapter_index is not None:
+                segments_by_chapter.setdefault(chapter_index, []).append(seg_ordinal)
+
             seg_ordinal += 1
 
             await _broadcast(job_id, {
@@ -374,7 +415,16 @@ async def _run_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
             pauses_ms[-1] = round(pauses_ms[-1] * _PARAGRAPH_PAUSE_FACTOR)
 
     # Збірка фінального файлу
+    artifacts: dict[str, str] = {}
     if all_segment_paths:
+        requested_formats = _requested_formats(options)
+        chapter_spans = _chapter_spans(chapters, segments_by_chapter)
+        chapter_names = {
+            chapter.title: chapter_file_name(chapter)
+            for index, chapter in enumerate(chapters)
+            if index in segments_by_chapter
+        }
+
         try:
             results = await asyncio.to_thread(
                 build_audio,
@@ -386,29 +436,53 @@ async def _run_job(job_id: int, semaphore: asyncio.Semaphore) -> None:
                 target_lufs=settings.target_lufs,
                 pauses_ms=pauses_ms,
                 energies_db=energies_db,
+                formats=requested_formats,
+                chapters=chapter_spans,
+                chapter_names=chapter_names,
+                tags=_audiobook_tags(document_title, job_id),
+                m4b_bitrate=settings.m4b_bitrate_kbps * 1000,
+                mp3_bitrate=settings.mp3_bitrate_kbps,
             )
-            output_path = str(results.get("mp3", results.get("wav", "")))
+            artifacts = {name: str(path) for name, path in results.items()}
+            primary = primary_format(tuple(results))
+            output_path = artifacts.get(primary, "")
         except Exception as exc:
             logger.error("Помилка збірки аудіо для завдання %d: %s", job_id, exc)
             with Session(get_engine()) as session:
-                job = session.get(Job, job_id)
-                _finish_job(session, job, JobStatus.FAILED, str(exc))
+                failed_job = session.get(Job, job_id)
+                if failed_job is not None:
+                    _finish_job(session, failed_job, JobStatus.FAILED, str(exc))
             return
     else:
         output_path = ""
 
     with Session(get_engine()) as session:
         job = session.get(Job, job_id)
+        if job is None:
+            # Завдання видалили, доки воно синтезувалось, — писати нікуди.
+            logger.warning("Завдання %d зникло з БД до завершення", job_id)
+            return
+
         job.output_path = output_path
+        # Перелік створених файлів живе в options_json: окрема колонка вимагала
+        # б ці міграції, а проєкт свідомо живе на create_all (те саме рішення,
+        # що й для client_token). Пишемо його ЗАВЖДИ, навіть порожнім: інакше
+        # після повтору, який нічого не зібрав, лишився б перелік від
+        # попереднього прогону, і завантаження віддавало б старі файли як нові.
+        options = dict(job.options_json or {})
+        options["artifacts"] = artifacts
+        job.options_json = options
+        session.add(job)
         _finish_job(session, job, JobStatus.DONE)
 
     await _broadcast(job_id, {
         "event": "finished",
         "job_id": job_id,
         "output_path": output_path,
+        "artifacts": artifacts,
         "status": "done",
     })
-    logger.info("Завдання %d завершено: %s", job_id, output_path)
+    logger.info("Завдання %d завершено: %s (файлів: %d)", job_id, output_path, len(artifacts))
 
 
 def _start_job(session: Session, job: Job) -> None:
@@ -416,6 +490,83 @@ def _start_job(session: Session, job: Job) -> None:
     job.started_at = utc_now()
     session.add(job)
     session.commit()
+
+
+def _map_blocks_to_chapters(
+    tasks: list[BlockTask], chapters: list[Chapter]
+) -> dict[int, int]:
+    """block_id → індекс розділу в плані.
+
+    Обхід один, а не «для кожного блоку шукаємо розділ»: блоки йдуть у порядку
+    читання, а розділи — суміжні діапазони `ordinal`, тож курсор достатньо
+    рухати вперед. На книзі з 5000 блоків це різниця між O(n) і O(n·m).
+    """
+    mapping: dict[int, int] = {}
+    cursor = 0
+    for task in tasks:
+        while cursor < len(chapters) and task.ordinal > chapters[cursor].last_block:
+            cursor += 1
+        if cursor >= len(chapters):
+            break
+        chapter = chapters[cursor]
+        if chapter.first_block <= task.ordinal <= chapter.last_block:
+            mapping[task.id] = cursor
+    return mapping
+
+
+def _chapter_spans(
+    chapters: list[Chapter], segments_by_chapter: dict[int, list[int]]
+) -> list[ChapterSpan]:
+    """Розділи в термінах індексів сегментів — те, що потрібно `build_audio`."""
+    spans: list[ChapterSpan] = []
+    for index in sorted(segments_by_chapter):
+        ordinals = segments_by_chapter[index]
+        if not ordinals:
+            continue
+        spans.append(
+            ChapterSpan(
+                title=chapters[index].title,
+                first_segment=min(ordinals),
+                last_segment=max(ordinals),
+            )
+        )
+    return spans
+
+
+def _requested_formats(options: dict[str, object]) -> tuple[str, ...]:
+    """Які файли створити для цього завдання.
+
+    `formats` — зі `options_json` (його ставить і API, і інтерфейс), із
+    запасним значенням із налаштувань. `chapter_split` додає zip із
+    файлами-розділами: це не формат звуку, а упаковка, тому окремим
+    прапорцем, а не значенням у `formats` (інакше вибір формату в UI вів би
+    до появи архіву, якого ніхто не просив).
+    """
+    settings = get_settings()
+    formats = list(
+        normalize_formats(options.get("formats"), default=settings.output_format_list)
+    )
+    if options.get("chapter_split") and "zip" not in formats:
+        formats.append("zip")
+    return tuple(formats)
+
+
+def _audiobook_tags(document_title: str, job_id: int) -> dict[str, str]:
+    """Метадані аудіокниги: без них плейер показує «Невідомий альбом».
+
+    PLAN, етап 2 ставить це окремим пунктом («ID3-теги через mutagen»).
+    """
+    settings = get_settings()
+    title = document_title.strip() or f"Завдання {job_id}"
+    return {
+        "title": title,
+        "album": title,
+        "artist": settings.audiobook_artist,
+        "album_artist": settings.audiobook_artist,
+        "genre": "Аудіокнига",
+        "date": str(utc_now().year),
+        "comment": f"Створено Voice Studio (завдання {job_id})",
+    }
 
 
 def _finish_job(session: Session, job: Job, status: JobStatus, error: str = "") -> None:

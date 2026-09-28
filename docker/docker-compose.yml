@@ -46,6 +46,16 @@ services:
     volumes:
       - ../data:/app/data
       - ../app:/app/app # dev: гаряче перезавантаження
+    # Кореневий .env підключаємо явно. Без цього контейнер бачив лише змінні з
+    # `environment` нижче, а `TTS_MODEL` із .env не долітав — і синтез давав 503,
+    # бо застосунок просив модель `tts-1`, якої в шлюзі немає (README §12
+    # описував це як ручний обхід: «задайте TTS_MODEL ... і в environment
+    # сервісу app»). Тепер джерело істини одне — `.env`.
+    # `environment` має пріоритет над `env_file`, тож адреса шлюзу й теки
+    # даних усередині Docker лишаються свої.
+    env_file:
+      - path: ../.env
+        required: false
     environment:
       - VOICE_STUDIO_DATA_DIR=/app/data
       - VOICE_STUDIO_MODEL_DIR=/app/data/models

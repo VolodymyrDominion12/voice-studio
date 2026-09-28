@@ -158,16 +158,29 @@ def test_full_synthesis_pipeline(client, fake_engine) -> None:
     assert download.headers["content-type"] == "audio/mpeg"
 
 
-def test_download_rejects_mismatched_format(client, fake_engine) -> None:
-    """`?format=wav` на MP3-результаті — честна помилка, а не підміна заголовка."""
+def test_download_unbuilt_format_is_404_with_available_list(client, fake_engine) -> None:
+    """`?format=wav` на MP3-завданні: файлу немає — 404 зі списком наявних.
+
+    Знахідка 16.3 закрита з іншого боку, ніж спершу: формати тепер створюються
+    на етапі збірки (`options.formats`), тож питання «чи можна віддати WAV»
+    має відповідь «так, якщо його замовили». Незамовлений формат — це не
+    помилка конвертації, а відсутній файл, і відповідь має це показувати.
+    """
     doc_id = upload(client)
     client.post(f"/ui/documents/{doc_id}/jobs", data={}, follow_redirects=False)
     job = wait_for_status(client, 1)
     assert job["status"] == "done"
 
     response = client.get("/api/v1/jobs/1/download?format=wav")
-    assert response.status_code == 409
-    assert "wav" in response.json()["detail"]
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert "wav" in detail
+    assert "mp3" in detail, "відповідь має підказувати, що доступне"
+
+    # А той формат, який справді створено, віддається
+    ok = client.get("/api/v1/jobs/1/download?format=mp3")
+    assert ok.status_code == 200
+    assert ok.headers["content-type"] == "audio/mpeg"
 
 
 def test_job_page_reaches_done_and_offers_download(client, fake_engine) -> None:

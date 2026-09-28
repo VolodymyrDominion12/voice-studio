@@ -7,7 +7,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 # libsndfile1 — потрібен soundfile. ffmpeg свідомо НЕ ставимо:
-# базовий цикл працює без нього (ADR-006). Для M4B — окремий образ.
+# базовий цикл працює без нього (ADR-006), а M4B/AAC із розділами кодує
+# PyAV — Python-колесо зі вбудованими бібліотеками FFmpeg (ADR-013).
+# Окремий образ «для M4B» тому не потрібен.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libsndfile1 \
